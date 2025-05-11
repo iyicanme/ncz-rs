@@ -1,0 +1,10 @@
+[package]
+name = "nczrs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bopper = { git = "https://github.com/iyicanme/bopper.git" }
+jiff = {version = "0.2", default-features = false, features = ["std"] }
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"]}
