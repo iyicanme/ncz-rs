@@ -44,7 +44,17 @@ pub enum Geometry {
         unknown1: u8,
         position: Coordinate,
         zeroes: Vec<u8>,
-        unknown2: Vec<u8>,
+        spacing: f32,
+        lower_bound: Coordinate,
+        upper_bound: Coordinate,
+        unknown3: f32,
+        size: f32,
+        tilt: f32,
+        snap: u8,
+        italic: bool,
+        underline: bool,
+        highlight: bool,
+        unknown4: u8,
         string: String,
     },
     Curve {
@@ -160,8 +170,20 @@ impl Geometry {
             5 => {
                 let unknown1 = buffer.get_u8()?;
                 let position = Coordinate::from_buffer_3d(buffer)?;
-                let zeroes = buffer.get_slice(16)?;
-                let unknown2 = buffer.get_slice(49)?;
+                let zeroes = buffer.get_slice(14)?;
+                let spacing = buffer.get_f32()?;
+                let lower_bound = Coordinate::from_buffer_2d(buffer)?;
+                let upper_bound = Coordinate::from_buffer_2d(buffer)?;
+                let unknown3 = buffer.get_f32()?;
+                let size = buffer.get_f32()?;
+                let tilt = buffer.get_f32()?;
+                let snap = buffer.get_u8()?;
+                let flags = buffer.get_u8()?;
+                let italic = (flags & 0x01) != 0;
+                let underline = (flags & 0x02) != 0;
+                let highlight = (flags & 0x04) != 0;
+                
+                let unknown4 = buffer.get_u8()?;
                 let string = get_string(buffer)?;
 
                 Some(Geometry::Text {
@@ -169,7 +191,17 @@ impl Geometry {
                     unknown1,
                     position,
                     zeroes,
-                    unknown2,
+                    spacing,
+                    lower_bound,
+                    upper_bound,
+                    unknown3,
+                    size,
+                    tilt,
+                    snap,
+                    italic,
+                    underline,
+                    highlight,
+                    unknown4,
                     string,
                 })
             }
