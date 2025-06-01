@@ -1,4 +1,4 @@
-use crate::get_string;
+use crate::get_string_with_padding;
 use bopper::ReadBuffer;
 
 #[derive(Debug, serde::Serialize)]
@@ -11,8 +11,8 @@ pub struct LineType {
 impl LineType {
     pub fn read(buffer: &mut impl ReadBuffer) -> Option<Self> {
         let unknown1 = buffer.get_slice(82)?;
-        let name = get_string(buffer)?;
-        let unknown2 = buffer.get_slice(136 - name.len())?;
+        let name = get_string_with_padding(buffer, 10)?;
+        let unknown2 = buffer.get_slice(126)?;
 
         let line_type = LineType {
             unknown1,
