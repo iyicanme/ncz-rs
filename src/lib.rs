@@ -55,7 +55,7 @@ impl Object {
                 Some(Self::Version { name })
             }
             28 => {
-                let name = get_string(&mut buffer)?;
+                let name = get_string_with_padding(&mut buffer, 10)?;
 
                 let content_bytes = buffer.to_vec();
 
@@ -83,4 +83,16 @@ pub fn get_string(buffer: &mut impl ReadBuffer) -> Option<String> {
     let string_bytes = buffer.get_slice(string_length)?;
 
     String::from_utf8(string_bytes).ok()
+}
+
+pub fn get_string_with_padding(
+    buffer: &mut impl ReadBuffer,
+    total_length: usize,
+) -> Option<String> {
+    let string_length = buffer.get_u8()?.into();
+    let string_bytes = buffer.get_buffer(total_length)?.to_vec();
+    let actual_bytes = &string_bytes[..string_length];
+
+    let string = String::from_utf8_lossy(actual_bytes).to_string();
+    Some(string)
 }
