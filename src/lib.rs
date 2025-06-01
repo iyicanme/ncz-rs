@@ -36,15 +36,17 @@ impl Object {
             }
             8 => {
                 let mut types = vec![];
-                    let unknown1 = buffer.get_slice(82)?;
-                    let name = get_string(&mut buffer)?;
-                    let unknown2 = buffer.get_slice(133 - name.len())?;
+                loop {
+                    let Some(line_type) = LineType::read(&mut buffer) else {
+                        continue;
+                    };
 
-                    types.push(LineType {
-                        unknown1,
-                        name,
-                        unknown2,
-                    });
+                    types.push(line_type);
+
+                    if buffer.is_empty() {
+                        break;
+                    }
+                }
 
                 Some(Self::LineTypes { types })
             }
