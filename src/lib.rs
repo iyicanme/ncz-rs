@@ -5,6 +5,7 @@ pub mod line_type;
 use crate::geometry::Geometry;
 use crate::line_type::LineType;
 use bopper::ReadBuffer;
+use encoding_rs::WINDOWS_1254;
 
 #[derive(Debug, serde::Serialize)]
 pub enum Object {
@@ -84,7 +85,8 @@ pub fn get_string(buffer: &mut impl ReadBuffer) -> Option<String> {
     let string_length = buffer.get_u8()?.into();
     let string_bytes = buffer.get_slice(string_length)?;
 
-    String::from_utf8(string_bytes).ok()
+    let string = WINDOWS_1254.decode(&string_bytes).0.to_string();
+    Some(string)
 }
 
 pub fn get_string_with_padding(
@@ -95,6 +97,6 @@ pub fn get_string_with_padding(
     let string_bytes = buffer.get_buffer(total_length)?.to_vec();
     let actual_bytes = &string_bytes[..string_length];
 
-    let string = String::from_utf8_lossy(actual_bytes).to_string();
+    let string = WINDOWS_1254.decode(&actual_bytes).0.to_string();
     Some(string)
 }
