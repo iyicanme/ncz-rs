@@ -12,9 +12,14 @@ pub enum Geometry {
         layer_id: u8,
         unknown1: u8,
         begin: Coordinate,
+        line_type: u8,
+        line_type2: u8,
         unknown2: Vec<u8>,
-        end: Coordinate,
+        lower_bound: Coordinate,
+        upper_bound: Coordinate,
         unknown3: Vec<u8>,
+        end: Coordinate,
+        unknown4: Vec<u8>,
     },
     Circle {
         layer_id: u8,
@@ -43,11 +48,11 @@ pub enum Geometry {
         layer_id: u8,
         unknown1: u8,
         position: Coordinate,
-        zeroes: Vec<u8>,
+        unknown2: Vec<u8>,
         spacing: f32,
         lower_bound: Coordinate,
         upper_bound: Coordinate,
-        unknown3: f32,
+        unknown3: Vec<u8>,
         size: f32,
         tilt: f32,
         snap: u8,
@@ -108,17 +113,27 @@ impl Geometry {
             2 => {
                 let unknown1 = buffer.get_u8()?;
                 let begin = Coordinate::from_buffer_3d(buffer)?;
-                let unknown2 = buffer.get_slice(34)?;
-                let end = Coordinate::from_buffer_3d(buffer)?;
-                let unknown3 = buffer.get_slice(16)?;
+                let line_type = buffer.get_u8()?;
+                let line_type2 = buffer.get_u8()?;
+                let unknown2 = buffer.get_slice(16)?;
+                let lower_bound = Coordinate::from_buffer_2d(buffer)?;
+                let upper_bound = Coordinate::from_buffer_2d(buffer)?;
+                let unknown3 = buffer.get_slice(4)?;
+                let end = Coordinate::from_buffer_2d(buffer)?;
+                let unknown4 = buffer.get_slice(4)?;
 
                 Some(Self::Line {
                     layer_id,
                     unknown1,
                     begin,
+                    line_type,
+                    line_type2,
                     unknown2,
-                    end,
+                    lower_bound,
+                    upper_bound,
                     unknown3,
+                    end,
+                    unknown4,
                 })
             }
             3 => {
@@ -170,11 +185,11 @@ impl Geometry {
             5 => {
                 let unknown1 = buffer.get_u8()?;
                 let position = Coordinate::from_buffer_3d(buffer)?;
-                let zeroes = buffer.get_slice(14)?;
+                let unknown2 = buffer.get_slice(14)?;
                 let spacing = buffer.get_f32()?;
                 let lower_bound = Coordinate::from_buffer_2d(buffer)?;
                 let upper_bound = Coordinate::from_buffer_2d(buffer)?;
-                let unknown3 = buffer.get_f32()?;
+                let unknown3 = buffer.get_slice(4)?;
                 let size = buffer.get_f32()?;
                 let tilt = buffer.get_f32()?;
                 let snap = buffer.get_u8()?;
@@ -182,7 +197,7 @@ impl Geometry {
                 let italic = (flags & 0x01) != 0;
                 let underline = (flags & 0x02) != 0;
                 let highlight = (flags & 0x04) != 0;
-                
+
                 let unknown4 = buffer.get_u8()?;
                 let string = get_string(buffer)?;
 
@@ -190,7 +205,7 @@ impl Geometry {
                     layer_id,
                     unknown1,
                     position,
-                    zeroes,
+                    unknown2,
                     spacing,
                     lower_bound,
                     upper_bound,
