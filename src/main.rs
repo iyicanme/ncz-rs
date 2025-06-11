@@ -1,11 +1,11 @@
 use bopper::{BigEndianReadBuffer, ReadBuffer};
 use jiff::{Unit, Zoned};
-use nczrs::Object;
 use std::fs::File;
 use std::io::{Read, Write};
+use nczrs::object::Object;
 
 fn main() {
-    let mut file = File::open("ncz/FOO.NCZ").unwrap();
+    let mut file = File::open("ncz/Karacapınar_ED50_3DERECE.NCZ").unwrap();
     let mut bytes = vec![];
 
     file.read_to_end(&mut bytes).unwrap();

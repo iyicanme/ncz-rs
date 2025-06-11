@@ -1,6 +1,6 @@
 use crate::coordinate::Coordinate;
-use crate::get_string;
 use bopper::ReadBuffer;
+use crate::string::get_string;
 
 #[derive(Debug, serde::Serialize)]
 pub enum Geometry {

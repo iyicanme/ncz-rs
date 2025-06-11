@@ -1,4 +1,4 @@
-use crate::get_string_with_padding;
+use crate::string::get_string_with_padding;
 use bopper::ReadBuffer;
 
 #[derive(Debug, serde::Serialize)]
