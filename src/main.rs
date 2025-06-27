@@ -1,37 +1,32 @@
-use bopper::{BigEndianReadBuffer, ReadBuffer};
 use jiff::{Unit, Zoned};
+use nczrs::{objects_to_dxf, parse_objects};
 use std::fs::File;
 use std::io::{Read, Write};
-use nczrs::object::Object;
+use std::path::Path;
 
 fn main() {
-    let mut file = File::open("ncz/Karacapınar_ED50_3DERECE.NCZ").unwrap();
+    let filename = "ncz/PROJE11.NCZ";
+    let mut file = File::open(filename).unwrap();
     let mut bytes = vec![];
 
     file.read_to_end(&mut bytes).unwrap();
 
-    let mut buffer = BigEndianReadBuffer::new(bytes.as_slice());
-
-    let mut objects = vec![];
-    while !buffer.is_empty() {
-        let Some(object) = Object::from_buffer(&mut buffer) else {
-            println!("parse failed");
-            continue;
-        };
-
-        objects.push(object);
-    }
+    let objects = parse_objects(&bytes);
 
     let serialized = serde_json::to_vec(&objects).unwrap();
 
-    let filename = format!(
+    let json_filename = format!(
         "out/{}.json",
         &Zoned::now()
             .round(Unit::Second)
             .unwrap()
             .strftime("%Y%m%d_%H%M%S")
     );
-    
-    let mut outfile = File::create(filename).unwrap();
+
+    let mut outfile = File::create(json_filename).unwrap();
     let _ = outfile.write(&serialized).unwrap();
+
+    let drawing = objects_to_dxf(objects);
+    let dxf_filename = Path::new(filename).file_stem().unwrap().to_str().unwrap().to_string() + ".dxf";
+    drawing.save_file(dxf_filename).unwrap()
 }

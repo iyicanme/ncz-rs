@@ -15,7 +15,7 @@ pub fn get_string_with_padding(
 ) -> Option<String> {
     let string_length = buffer.get_u8()?.into();
     let string_bytes = buffer.get_buffer(total_length)?.to_vec();
-    let actual_bytes = &string_bytes[..string_length];
+    let actual_bytes = string_bytes.get(..string_length)?;
 
     let string = WINDOWS_1254.decode(&actual_bytes).0.to_string();
     Some(string)

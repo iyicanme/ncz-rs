@@ -3,9 +3,26 @@ name = "nczrs"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "nczrs"
+path = "src/main.rs"
+required-features = ["dxf"]
+
+[features]
+default = ["dxf"]
+dxf = ["dep:dxf"]
+
 [dependencies]
 bopper = { git = "https://github.com/iyicanme/bopper.git" }
+dxf = { version = "0.6.0", default-features = false, features = [], optional = true }
 encoding_rs = { version = "0.8", default-features = false, features = ["alloc"] }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
+
+[profile.release]
+opt-level = "s"
+lto = true

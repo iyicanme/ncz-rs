@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NCZ Viewer</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header>
+    <h1>NCZ Viewer</h1>
+    <p>Open a Netcad <code>.ncz</code> drawing to list its contents. The file is parsed in your browser and is never uploaded.</p>
+  </header>
+
+  <main>
+    <label id="drop-zone" for="file-input">
+      <input id="file-input" type="file" accept=".ncz,.NCZ">
+      <span id="drop-text">Drop an NCZ file here or <u>choose one</u></span>
+    </label>
+
+    <p id="status" role="status"></p>
+
+    <section id="results" hidden>
+      <section id="file-info"></section>
+
+      <div id="toolbar">
+        <div id="kind-filters" role="group" aria-label="Filter by kind"></div>
+        <input id="search" type="search" placeholder="Search text, layer, kind…" aria-label="Search elements">
+      </div>
+
+      <div id="table-wrap">
+        <table>
+          <thead>
+            <tr><th>#</th><th>Kind</th><th>Layer</th><th>Details</th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <button id="show-more" type="button" hidden>Show more</button>
+    </section>
+  </main>
+</body>
+</html>

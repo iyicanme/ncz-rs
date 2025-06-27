@@ -33,16 +33,8 @@ impl Object {
             }
             8 => {
                 let mut types = vec![];
-                loop {
-                    let Some(line_type) = LineType::read(&mut buffer) else {
-                        continue;
-                    };
-
+                while let Some(line_type) = LineType::read(&mut buffer) {
                     types.push(line_type);
-
-                    if buffer.is_empty() {
-                        break;
-                    }
                 }
 
                 Some(Self::LineTypes { types })
