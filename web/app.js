@@ -66,8 +66,9 @@ async function openFile(file) {
 }
 
 function showObjects(objects) {
-  const info = { Version: [], UserInformation: [], Metadata: [], Layers: [], LayerInformation: [], LineTypes: [], Fonts: [], Libraries: [], FileHeader: [] };
+  const info = { Version: [], Scale: [], RasterReferences: [], UserInformation: [], Metadata: [], Layers: [], LayerInformation: [], LineTypes: [], Fonts: [], Libraries: [], FileHeader: [] };
   elements = [];
+  const layerNames = objects.find((object) => object.Layers)?.Layers.layers.map((layer) => layer.name) ?? [];
 
   objects.forEach((object, recordIndex) => {
     // Records without fields, such as block ends, serialize as plain strings.
@@ -77,7 +78,7 @@ function showObjects(objects) {
     if (type === "Geometry") {
       const [kind, geometry] = Object.entries(value.geometry)[0];
       const details = geometry.code ? `[${geometry.code}] ${describe(kind, geometry)}` : describe(kind, geometry);
-      elements.push({ recordIndex, kind: kindLabel(kind, geometry), layer: geometry.layer_id, details, raw: object });
+      elements.push({ recordIndex, kind: kindLabel(kind, geometry), layer: layerNames[geometry.layer_id] ?? geometry.layer_id, details, raw: object });
     } else if (type === "Unknown") {
       elements.push({ recordIndex, kind: "Unknown record", layer: null, details: `type ${value.id}, ${value.bytes.length} bytes`, raw: object });
     } else {
@@ -98,6 +99,7 @@ function kindLabel(kind, geometry) {
   switch (kind) {
     case "PolyLine": return "Polyline";
     case "BlockInsert": return "Block insert";
+    case "MapSheet": return "Map sheet";
     case "Other": return `Other geometry (${geometry.id})`;
     default: return kind;
   }
@@ -121,7 +123,11 @@ function describe(kind, g) {
     }
     case "Symbol": return `symbol ${g.symbol} at ${point(g.position)}, scale ${num(g.scale)}`;
     case "BlockInsert": return `"${g.name}" at ${point(g.position)}, rotation ${num(g.rotation)} rad, scale ${num(g.scale_x)} × ${num(g.scale_y)}`;
-    case "Image": return `image at ${point(g.position)}, ${g.properties.map((p) => p.key === "imageContent" ? `${p.key}: ${p.value.length} chars` : `${p.key}: ${p.value}`).join(", ")}`;
+    case "Image": return `object at ${point(g.position)}, ${g.properties.map((p) => p.value.length > 80 ? `${p.key}: ${p.value.length} chars` : `${p.key}: ${p.value}`).join(", ")}`;
+    case "Window": return `${g.name ? `${g.name}, ` : ""}${point(g.corner1)} – ${point(g.corner2)}`;
+    case "MapSheet": return `${g.name}, ${point(g.lower_bound)} – ${point(g.upper_bound)}`;
+    case "Triangle": return g.vertices.map(point).join(", ");
+    case "Empty": return "no data";
     default: return `${g.bytes.length} bytes`;
   }
 }
@@ -139,7 +145,9 @@ function renderFileInfo(info) {
 
   card("Version", info.Version.map((v) => [v.name]));
   card("User", info.UserInformation.map((u) => [u.name]));
-  card("Metadata", info.Metadata.map((m) => [key(`${m.name}: `), m.bytes ? `${m.bytes.length} bytes of binary data` : m.content]));
+  card("Scale", info.Scale.map((s) => [`1:${Math.round(s.scale * 1000)}`]));
+  card("Rasters", info.RasterReferences.flatMap((r) => r.references).map((r) => [r.path]));
+  card("Metadata", info.Metadata.map((m) => [key(`${m.name}: `), describeMetadata(m.content)]));
   const layers = info.Layers.flatMap((l) => l.layers).map((l) => l.name);
   card("Layers", layers.length ? [[layers.join(", ")]] : []);
   card("Fonts", info.Fonts.map((f) => [f.names.join(", ")]));
@@ -148,6 +156,15 @@ function renderFileInfo(info) {
 
   const lineTypes = info.LineTypes.flatMap((l) => l.types).map((t) => t.name).filter((name) => name.trim() !== "");
   card("Line types", lineTypes.length ? [[lineTypes.join(", ")]] : []);
+}
+
+function describeMetadata(content) {
+  const [kind, value] = Object.entries(content)[0];
+  switch (kind) {
+    case "Text": return value;
+    case "SymbolLibraries": return value.libraries.map((l) => `${l.name} (scale ${num(l.scale)})`).join(", ");
+    default: return `${value.length} bytes of binary data`;
+  }
 }
 
 function renderKindFilters() {

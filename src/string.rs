@@ -13,11 +13,12 @@ pub fn get_string_with_padding(
     buffer: &mut impl ReadBuffer,
     total_length: usize,
 ) -> Option<String> {
-    let string_length = buffer.get_u8()?.into();
+    let string_length: usize = buffer.get_u8()?.into();
     let string_bytes = buffer.get_buffer(total_length)?.to_vec();
-    let actual_bytes = string_bytes.get(..string_length)?;
+    // Some files hold stale data in padded fields, so a length past the field is clamped.
+    let actual_bytes = &string_bytes[..string_length.min(total_length)];
 
-    let string = WINDOWS_1254.decode(&actual_bytes).0.to_string();
+    let string = WINDOWS_1254.decode(actual_bytes).0.to_string();
     Some(string)
 }
 

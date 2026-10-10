@@ -1,6 +1,6 @@
 use bopper::ReadBuffer;
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct Coordinate {
     pub x: f64,
     pub y: f64,

@@ -7,8 +7,14 @@ pub const POLYLINE_CLOSED: u32 = 0x01;
 /// Fields shared by every geometry record, read before the type specific part.
 #[derive(Debug, serde::Serialize)]
 pub struct Header {
-    pub layer_id: u8,
+    /// Zero in version 5 files, a copy of the geometry type in version 8 files.
     pub unknown1: u8,
+    /// Index into the layer table, see [`crate::object::Object::Layers`].
+    pub layer_id: u8,
+    /// Index into the line type table, see [`crate::object::Object::LineTypes`].
+    pub line_type: u8,
+    /// Usually equal to `line_type`, sometimes with bit 0x80 set.
+    pub line_type2: u8,
     pub attributes: Vec<u8>,
     pub lower_bound: Coordinate,
     pub upper_bound: Coordinate,
@@ -20,11 +26,13 @@ pub struct Header {
 impl Header {
     /// Returns the geometry type, the anchor coordinate and the header.
     fn read(buffer: &mut impl ReadBuffer, has_code: bool) -> Option<(u8, Coordinate, Self)> {
-        let layer_id = buffer.get_u8()?;
-        let geometry_type = buffer.get_u8()?;
         let unknown1 = buffer.get_u8()?;
+        let geometry_type = buffer.get_u8()?;
+        let layer_id = buffer.get_u8()?;
         let anchor = Coordinate::from_buffer_with_elevation(buffer)?;
-        let attributes = buffer.get_slice(18)?;
+        let line_type = buffer.get_u8()?;
+        let line_type2 = buffer.get_u8()?;
+        let attributes = buffer.get_slice(16)?;
         let lower_bound = Coordinate::from_buffer_2d(buffer)?;
         let upper_bound = Coordinate::from_buffer_2d(buffer)?;
         let unknown2 = buffer.get_u32()?;
@@ -35,8 +43,10 @@ impl Header {
         };
 
         let header = Self {
-            layer_id,
             unknown1,
+            layer_id,
+            line_type,
+            line_type2,
             attributes,
             lower_bound,
             upper_bound,
@@ -70,8 +80,6 @@ pub enum Geometry {
         #[serde(flatten)]
         header: Header,
         begin: Coordinate,
-        line_type: u8,
-        line_type2: u8,
         end: Coordinate,
     },
     Circle {
@@ -143,12 +151,49 @@ pub enum Geometry {
         scale_x: f64,
         scale_y: f64,
     },
+    /// An object described by properties, such as an embedded image (`imageContent`) or rich text (`rtfData`).
     Image {
         #[serde(flatten)]
         header: Header,
         position: Coordinate,
+        scale: f32,
         unknown3: Vec<u8>,
+        /// Number of bytes after this field, plus 8.
+        data_length: u32,
+        /// 2 for images and rich text, 1 for other objects.
+        kind: u8,
+        /// Identifies the kind of object, images share one and rich text shares another.
+        class_id: String,
+        unknown4: u32,
         properties: Vec<ImageProperty>,
+    },
+    /// A named rectangle given by two opposite corners, e.g. a plot window (`CIZPEN-n`) or a map sheet.
+    Window {
+        #[serde(flatten)]
+        header: Header,
+        corner1: Coordinate,
+        corner2: Coordinate,
+        name: String,
+        unknown3: u32,
+    },
+    /// A map sheet (pafta) frame, e.g. `G29-A-07-B-3-A`. Its extent is the header bounds.
+    MapSheet {
+        #[serde(flatten)]
+        header: Header,
+        name: String,
+    },
+    /// A face of a triangulated terrain model.
+    Triangle {
+        #[serde(flatten)]
+        header: Header,
+        vertices: [Coordinate; 3],
+        min_z: f32,
+        max_z: f32,
+    },
+    /// Has no body and inverted, empty bounds.
+    Empty {
+        #[serde(flatten)]
+        header: Header,
     },
     Other {
         #[serde(flatten)]
@@ -175,16 +220,12 @@ impl Geometry {
                 })
             }
             2 => {
-                let line_type = header.attributes[0];
-                let line_type2 = header.attributes[1];
                 let mut end = Coordinate::from_buffer_2d(buffer)?;
                 end.z = buffer.get_f32()?.into();
 
                 Some(Self::Line {
                     header,
                     begin: anchor,
-                    line_type,
-                    line_type2,
                     end,
                 })
             }
@@ -213,7 +254,7 @@ impl Geometry {
                 })
             }
             5 => {
-                let spacing = f32::from_le_bytes(header.attributes[14..18].try_into().ok()?);
+                let spacing = f32::from_le_bytes(header.attributes[12..16].try_into().ok()?);
                 let size = buffer.get_f32()?;
                 let tilt = buffer.get_f32()?;
                 let snap = buffer.get_u8()?.into();
@@ -299,6 +340,39 @@ impl Geometry {
                     point_flags,
                 })
             }
+            10 => {
+                let name = get_string_with_padding(buffer, 17)?;
+                let corner2 = Coordinate::from_buffer_2d(buffer)?;
+                let unknown3 = buffer.get_u32()?;
+
+                Some(Self::Window {
+                    header,
+                    corner1: anchor,
+                    corner2,
+                    name,
+                    unknown3,
+                })
+            }
+            11 => {
+                let name = get_string_with_padding(buffer, 17)?;
+
+                Some(Self::MapSheet { header, name })
+            }
+            12 => {
+                let mut second = Coordinate::from_buffer_2d(buffer)?;
+                second.z = buffer.get_f32()?.into();
+                let mut third = Coordinate::from_buffer_2d(buffer)?;
+                third.z = buffer.get_f32()?.into();
+                let min_z = buffer.get_f32()?;
+                let max_z = buffer.get_f32()?;
+
+                Some(Self::Triangle {
+                    header,
+                    vertices: [anchor, second, third],
+                    min_z,
+                    max_z,
+                })
+            }
             13 => {
                 let name = get_string_with_padding(buffer, 34)?;
                 let id = buffer.get_u32()?;
@@ -319,7 +393,12 @@ impl Geometry {
                 })
             }
             15 => {
-                let unknown3 = buffer.get_slice(53)?;
+                let scale = buffer.get_f32()?;
+                let unknown3 = buffer.get_slice(24)?;
+                let data_length = buffer.get_u32()?;
+                let kind = buffer.get_u8()?;
+                let class_id = buffer.get_slice(16)?.iter().map(|b| format!("{b:02x}")).collect();
+                let unknown4 = buffer.get_u32()?;
                 let property_count = buffer.get_u32()?;
 
                 let mut properties = vec![];
@@ -342,15 +421,41 @@ impl Geometry {
                 Some(Self::Image {
                     header,
                     position: anchor,
+                    scale,
                     unknown3,
+                    data_length,
+                    kind,
+                    class_id,
+                    unknown4,
                     properties,
                 })
             }
+            14 => Some(Self::Empty { header }),
             id => Some(Self::Other {
                 header,
                 id,
                 bytes: buffer.to_vec(),
             }),
+        }
+    }
+
+    pub fn header(&self) -> &Header {
+        match self {
+            Self::Point { header, .. }
+            | Self::Line { header, .. }
+            | Self::Circle { header, .. }
+            | Self::Arc { header, .. }
+            | Self::Text { header, .. }
+            | Self::PolyLine { header, .. }
+            | Self::Symbol { header, .. }
+            | Self::Contour { header, .. }
+            | Self::BlockInsert { header, .. }
+            | Self::Image { header, .. }
+            | Self::Window { header, .. }
+            | Self::MapSheet { header, .. }
+            | Self::Triangle { header, .. }
+            | Self::Empty { header, .. }
+            | Self::Other { header, .. } => header,
         }
     }
 }
