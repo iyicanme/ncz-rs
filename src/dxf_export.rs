@@ -93,6 +93,14 @@ fn dxf_line_type(line_type: &LineType) -> Option<dxf::tables::LineType> {
     })
 }
 
+/// Whether the geometry has a DXF counterpart, the others are left out of the drawing.
+pub fn is_exported(geometry: &Geometry) -> bool {
+    !matches!(
+        geometry,
+        Geometry::Symbol { .. } | Geometry::Image { .. } | Geometry::Empty { .. } | Geometry::Other { .. }
+    )
+}
+
 fn entity_type(drawing: &mut dxf::Drawing, geometry: Geometry) -> Option<dxf::entities::EntityType> {
     let entity = match geometry {
         Geometry::Point { position, .. } => {

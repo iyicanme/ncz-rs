@@ -1,6 +1,4 @@
-import { loadParser } from "./ncz.js";
-
-const PAGE_SIZE = 500;
+import { loadConverter } from "./ncz.js";
 
 const fileInput = document.getElementById("file-input");
 const dropZone = document.getElementById("drop-zone");
@@ -8,13 +6,24 @@ const dropText = document.getElementById("drop-text");
 const status = document.getElementById("status");
 const results = document.getElementById("results");
 const fileInfo = document.getElementById("file-info");
+const contents = document.getElementById("contents");
+const dxfInfo = document.getElementById("dxf-info");
+const downloadDxf = document.getElementById("download-dxf");
+const toggleDetails = document.getElementById("toggle-details");
+const details = document.getElementById("details");
+const detailInfo = document.getElementById("detail-info");
 const kindFilters = document.getElementById("kind-filters");
 const search = document.getElementById("search");
 const rows = document.getElementById("rows");
 const showMore = document.getElementById("show-more");
 
-const parserReady = loadParser(new URL("nczrs.wasm", import.meta.url));
+const PAGE_SIZE = 500;
 
+const converterReady = loadConverter();
+
+// The open file, kept so its details can be listed on demand.
+let currentFile = null;
+let detailsLoaded = false;
 let elements = [];
 let activeKind = null;
 let visibleCount = PAGE_SIZE;
@@ -45,28 +54,143 @@ showMore.addEventListener("click", () => {
   renderRows();
 });
 
+toggleDetails.addEventListener("click", async () => {
+  const expand = details.hidden;
+  if (expand && !detailsLoaded) {
+    toggleDetails.disabled = true;
+    const previousStatus = status.textContent;
+    setStatus(`Listing the contents of ${currentFile.name}…`);
+    await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve)));
+    try {
+      const { parse } = await converterReady;
+      showObjects(parse(currentFile.bytes));
+      detailsLoaded = true;
+      setStatus(previousStatus);
+    } catch (error) {
+      console.error(error);
+      setStatus(`Could not list the contents of ${currentFile.name}: ${error.message}.`, true);
+      return;
+    } finally {
+      toggleDetails.disabled = false;
+    }
+  }
+
+  details.hidden = !expand;
+  toggleDetails.setAttribute("aria-expanded", String(expand));
+});
+
 async function openFile(file) {
-  setStatus(`Parsing ${file.name}…`);
+  results.hidden = true;
+  currentFile = null;
+  resetDetails();
+  if (downloadDxf.href) URL.revokeObjectURL(downloadDxf.href);
+  dropText.textContent = file.name;
+  setStatus(`Converting ${file.name}…`);
+  // Let the status paint before the conversion blocks the page.
+  await new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve)));
+
   try {
-    const parse = await parserReady;
+    const { convert } = await converterReady;
     const bytes = new Uint8Array(await file.arrayBuffer());
 
     const started = performance.now();
-    const objects = parse(bytes);
+    const { summary, dxf } = convert(bytes);
     const elapsed = performance.now() - started;
+    if (!summary.file.version && Object.keys(summary.file.geometries).length === 0) {
+      throw new Error("no NCZ data found");
+    }
 
-    showObjects(objects);
-    dropText.textContent = file.name;
-    setStatus(`${file.name}: ${formatBytes(bytes.length)}, ${objects.length} records, ${elements.length} elements, parsed in ${elapsed.toFixed(0)} ms.`);
+    const dxfName = `${file.name.replace(/\.[^.]*$/, "")}.dxf`;
+    downloadDxf.href = URL.createObjectURL(new Blob([dxf], { type: "application/dxf" }));
+    downloadDxf.download = dxfName;
+    downloadDxf.textContent = `Download ${dxfName}`;
+
+    currentFile = { name: file.name, bytes };
+    showSummary(file, summary);
+    results.hidden = false;
+    setStatus(`Converted in ${(elapsed / 1000).toFixed(1)} s.`);
   } catch (error) {
     console.error(error);
-    results.hidden = true;
-    setStatus(`Could not parse ${file.name}: ${error.message}`, true);
+    // A Rust panic traps the module, which then can't be used again.
+    const hint = error instanceof WebAssembly.RuntimeError ? " Reload the page before trying again." : "";
+    setStatus(`Could not convert ${file.name}: ${error.message}.${hint}`, true);
   }
 }
 
+function showSummary(file, { file: ncz, dxf }) {
+  const geometryCount = sum(ncz.geometries);
+  const skippedCount = sum(dxf.skipped);
+
+  fill(fileInfo, [
+    ["Name", file.name],
+    ["Size", formatBytes(file.size)],
+    ["NetCAD version", ncz.version],
+    ["User", ncz.user],
+    ["Scale", ncz.scale ? `1:${Math.round(ncz.scale * 1000).toLocaleString()}` : null],
+    ["Extent", ncz.lower_bound && ncz.upper_bound ? extent(ncz.lower_bound, ncz.upper_bound) : null],
+  ]);
+
+  fill(contents, [
+    ["Geometries", geometryCount.toLocaleString()],
+    ...byCount(ncz.geometries),
+    ["Layers", ncz.layers.toLocaleString()],
+    ["Line types", ncz.line_types.toLocaleString()],
+    ["Blocks", ncz.blocks.toLocaleString()],
+  ]);
+
+  fill(dxfInfo, [
+    ["Size", formatBytes(dxf.size)],
+    ["Entities", sum(dxf.entities).toLocaleString()],
+    ...byCount(dxf.entities),
+    ["Layers", dxf.layers.toLocaleString()],
+    ["Line types", dxf.line_types.toLocaleString()],
+    ["Blocks", dxf.blocks.toLocaleString()],
+    ["Not converted", skippedCount === 0 ? "nothing" :
+      `${skippedCount.toLocaleString()} (${Object.entries(dxf.skipped).map(([kind, count]) => `${kind.toLowerCase()} ${count.toLocaleString()}`).join(", ")})`],
+  ]);
+}
+
+// Fills a <dl> with [term, value] rows, skipping missing values. Rows from byCount are indented.
+function fill(list, rows) {
+  list.replaceChildren(...rows
+    .filter(([, value]) => value !== null && value !== undefined && value !== "")
+    .flatMap(([term, value, nested]) => [
+      el("dt", { className: nested ? "nested" : "" }, term),
+      el("dd", {}, value),
+    ]));
+}
+
+function byCount(counts) {
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([kind, count]) => [kind, count.toLocaleString(), true]);
+}
+
+function sum(counts) {
+  return Object.values(counts).reduce((total, count) => total + count, 0);
+}
+
+function extent(lower, upper) {
+  const size = `${num(upper.x - lower.x)} × ${num(upper.y - lower.y)}`;
+  return `${size} (${num(lower.x)}, ${num(lower.y)} – ${num(upper.x)}, ${num(upper.y)})`;
+}
+
+function num(value) {
+  return value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
+function resetDetails() {
+  detailsLoaded = false;
+  details.hidden = true;
+  toggleDetails.setAttribute("aria-expanded", "false");
+  elements = [];
+  detailInfo.replaceChildren();
+  kindFilters.replaceChildren();
+  rows.replaceChildren();
+}
+
 function showObjects(objects) {
-  const info = { Version: [], Scale: [], RasterReferences: [], UserInformation: [], Metadata: [], Layers: [], LayerInformation: [], LineTypes: [], Fonts: [], Libraries: [], FileHeader: [] };
+  const info = { Version: [], Scale: [], RasterReferences: [], UserInformation: [], Metadata: [], Layers: [], LayerInformation: [], LineTypes: [], Fonts: [], Libraries: [] };
   elements = [];
   const layerNames = objects.find((object) => object.Layers)?.Layers.layers.map((layer) => layer.name) ?? [];
 
@@ -86,13 +210,12 @@ function showObjects(objects) {
     }
   });
 
-  renderFileInfo(info);
+  renderDetailInfo(info);
   activeKind = null;
   visibleCount = PAGE_SIZE;
   search.value = "";
   renderKindFilters();
   renderRows();
-  results.hidden = false;
 }
 
 function kindLabel(kind, geometry) {
@@ -109,11 +232,11 @@ function describe(kind, g) {
   switch (kind) {
     case "Point": return g.name ? `${g.name} at ${point(g.position)}` : point(g.position);
     case "Line": return `${point(g.begin)} → ${point(g.end)}`;
-    case "Circle": return `center ${point(g.center)}, r ${num(g.radius)}`;
-    case "Arc": return `center ${point(g.center)}, r ${num(g.radius)}, ${num(g.start_angle)} rad → ${num(g.end_angle)} rad`;
+    case "Circle": return `center ${point(g.center)}, r ${dec(g.radius)}`;
+    case "Arc": return `center ${point(g.center)}, r ${dec(g.radius)}, ${dec(g.start_angle)} rad → ${dec(g.end_angle)} rad`;
     case "Text": {
       const styles = ["italic", "underline", "highlight"].filter((style) => g[style]);
-      return `"${g.string}" at ${point(g.position)}, size ${num(g.size)}${styles.length ? `, ${styles.join(", ")}` : ""}`;
+      return `"${g.string}" at ${point(g.position)}, size ${dec(g.size)}${styles.length ? `, ${styles.join(", ")}` : ""}`;
     }
     case "PolyLine":
     case "Contour": {
@@ -121,8 +244,8 @@ function describe(kind, g) {
       const closed = kind === "PolyLine" && (g.flags & 0x01) ? "closed, " : "";
       return `${g.name ? `${g.name}, ` : ""}${closed}${g.points.length} points${ends}`;
     }
-    case "Symbol": return `symbol ${g.symbol} at ${point(g.position)}, scale ${num(g.scale)}`;
-    case "BlockInsert": return `"${g.name}" at ${point(g.position)}, rotation ${num(g.rotation)} rad, scale ${num(g.scale_x)} × ${num(g.scale_y)}`;
+    case "Symbol": return `symbol ${g.symbol} at ${point(g.position)}, scale ${dec(g.scale)}`;
+    case "BlockInsert": return `"${g.name}" at ${point(g.position)}, rotation ${dec(g.rotation)} rad, scale ${dec(g.scale_x)} × ${dec(g.scale_y)}`;
     case "Image": return `object at ${point(g.position)}, ${g.properties.map((p) => p.value.length > 80 ? `${p.key}: ${p.value.length} chars` : `${p.key}: ${p.value}`).join(", ")}`;
     case "Window": return `${g.name ? `${g.name}, ` : ""}${point(g.corner1)} – ${point(g.corner2)}`;
     case "MapSheet": return `${g.name}, ${point(g.lower_bound)} – ${point(g.upper_bound)}`;
@@ -132,14 +255,14 @@ function describe(kind, g) {
   }
 }
 
-function renderFileInfo(info) {
-  fileInfo.replaceChildren();
+function renderDetailInfo(info) {
+  detailInfo.replaceChildren();
 
   const card = (title, items) => {
     if (items.length === 0) return;
     const section = el("div", { className: "info-card" }, el("h2", {}, title));
     section.append(el("ul", {}, ...items.map((item) => el("li", {}, ...item))));
-    fileInfo.append(section);
+    detailInfo.append(section);
   };
   const key = (text) => el("span", { className: "key" }, text);
 
@@ -162,7 +285,7 @@ function describeMetadata(content) {
   const [kind, value] = Object.entries(content)[0];
   switch (kind) {
     case "Text": return value;
-    case "SymbolLibraries": return value.libraries.map((l) => `${l.name} (scale ${num(l.scale)})`).join(", ");
+    case "SymbolLibraries": return value.libraries.map((l) => `${l.name} (scale ${dec(l.scale)})`).join(", ");
     default: return `${value.length} bytes of binary data`;
   }
 }
@@ -200,7 +323,7 @@ function renderRows() {
     const row = el("tr", { className: "element" },
       el("td", {}, String(element.recordIndex)),
       el("td", {}, element.kind),
-      el("td", {}, element.layer ?? "–"),
+      el("td", {}, String(element.layer ?? "–")),
       el("td", {}, element.details));
     row.addEventListener("click", () => toggleRaw(row, element));
     fragment.append(row);
@@ -229,10 +352,11 @@ function prettyJson(value) {
 }
 
 function point(c) {
-  return c.z === 0 ? `(${num(c.x)}, ${num(c.y)})` : `(${num(c.x)}, ${num(c.y)}, ${num(c.z)})`;
+  return c.z === 0 ? `(${dec(c.x)}, ${dec(c.y)})` : `(${dec(c.x)}, ${dec(c.y)}, ${dec(c.z)})`;
 }
 
-function num(value) {
+// Plain number formatting for coordinates in the details table.
+function dec(value) {
   return Number.isInteger(value) ? String(value) : value.toFixed(3);
 }
 
@@ -247,6 +371,6 @@ function setStatus(text, isError = false) {
 
 function el(tag, props, ...children) {
   const node = Object.assign(document.createElement(tag), props);
-  node.append(...children.map((child) => (typeof child === "number" ? String(child) : child)));
+  node.append(...children);
   return node;
 }

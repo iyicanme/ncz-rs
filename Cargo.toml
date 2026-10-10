@@ -23,6 +23,11 @@ jiff = { version = "0.2", default-features = false, features = ["std"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }
 serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 
+# The DXF export needs random numbers and a clock, which the browser provides through wasm-bindgen.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.129"
+uuid = { version = "1", default-features = false, features = ["js"] }
+
 [profile.release]
 opt-level = "s"
 lto = true

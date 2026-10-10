@@ -439,6 +439,27 @@ impl Geometry {
         }
     }
 
+    /// A human readable name of the kind of geometry.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Point { .. } => "Point",
+            Self::Line { .. } => "Line",
+            Self::Circle { .. } => "Circle",
+            Self::Arc { .. } => "Arc",
+            Self::Text { .. } => "Text",
+            Self::PolyLine { .. } => "Polyline",
+            Self::Symbol { .. } => "Symbol",
+            Self::Contour { .. } => "Contour",
+            Self::BlockInsert { .. } => "Block insert",
+            Self::Image { .. } => "Image",
+            Self::Window { .. } => "Window",
+            Self::MapSheet { .. } => "Map sheet",
+            Self::Triangle { .. } => "Triangle",
+            Self::Empty { .. } => "Empty",
+            Self::Other { .. } => "Other",
+        }
+    }
+
     pub fn header(&self) -> &Header {
         match self {
             Self::Point { header, .. }

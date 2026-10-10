@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NCZ Viewer</title>
+  <title>NCZ to DXF</title>
   <link rel="stylesheet" href="style.css">
   <script type="module" src="app.js"></script>
 </head>
 <body>
   <header>
-    <h1>NCZ Viewer</h1>
-    <p>Open a Netcad <code>.ncz</code> drawing to list its contents. The file is parsed in your browser and is never uploaded.</p>
+    <h1>NCZ to DXF</h1>
+    <p>Convert a Netcad <code>.ncz</code> drawing to DXF. The file is converted in your browser and is never uploaded.</p>
   </header>
 
   <main>
@@ -22,22 +22,44 @@
     <p id="status" role="status"></p>
 
     <section id="results" hidden>
-      <section id="file-info"></section>
-
-      <div id="toolbar">
-        <div id="kind-filters" role="group" aria-label="Filter by kind"></div>
-        <input id="search" type="search" placeholder="Search text, layer, kind…" aria-label="Search elements">
+      <div id="cards">
+        <div class="card">
+          <h2>File</h2>
+          <dl id="file-info"></dl>
+        </div>
+        <div class="card">
+          <h2>Contents</h2>
+          <dl id="contents"></dl>
+        </div>
+        <div class="card" id="dxf-card">
+          <h2>DXF</h2>
+          <dl id="dxf-info"></dl>
+        </div>
       </div>
 
-      <div id="table-wrap">
-        <table>
-          <thead>
-            <tr><th>#</th><th>Kind</th><th>Layer</th><th>Details</th></tr>
-          </thead>
-          <tbody id="rows"></tbody>
-        </table>
+      <div id="actions">
+        <a id="download-dxf" class="button">Download DXF</a>
+        <button id="toggle-details" class="button secondary" type="button" aria-expanded="false" aria-controls="details">Details</button>
       </div>
-      <button id="show-more" type="button" hidden>Show more</button>
+
+      <section id="details" hidden>
+        <section id="detail-info"></section>
+
+        <div id="toolbar">
+          <div id="kind-filters" role="group" aria-label="Filter by kind"></div>
+          <input id="search" type="search" placeholder="Search text, layer, kind…" aria-label="Search elements">
+        </div>
+
+        <div id="table-wrap">
+          <table>
+            <thead>
+              <tr><th>#</th><th>Kind</th><th>Layer</th><th>Details</th></tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <button id="show-more" type="button" hidden>Show more</button>
+      </section>
     </section>
   </main>
 </body>

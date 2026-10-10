@@ -364,6 +364,8 @@ dependencies = [
  "jiff",
  "serde",
  "serde_json",
+ "uuid",
+ "wasm-bindgen",
 ]
 
 [[package]]

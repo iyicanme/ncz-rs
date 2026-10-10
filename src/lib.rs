@@ -8,6 +8,8 @@ pub mod geometry;
 pub mod line_type;
 pub mod object;
 pub mod string;
+#[cfg(feature = "dxf")]
+pub mod summary;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 

@@ -1,38 +1,41 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use wasm_bindgen::prelude::*;
 
-static RESULT_LENGTH: AtomicUsize = AtomicUsize::new(0);
-
-/// Allocates `length` bytes for the host to copy the NCZ file into.
-#[unsafe(no_mangle)]
-pub extern "C" fn nczrs_alloc(length: usize) -> *mut u8 {
-    let mut bytes = Vec::<u8>::with_capacity(length);
-    let pointer = bytes.as_mut_ptr();
-    core::mem::forget(bytes);
-
-    pointer
+#[wasm_bindgen]
+pub struct Conversion {
+    summary: String,
+    dxf: Vec<u8>,
 }
 
-/// Parses the NCZ file in `pointer[..length]` and returns a pointer to its objects as JSON.
-/// The JSON length is available from `nczrs_result_length`.
-///
-/// # Safety
-/// `pointer` must point to `length` initialized bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn nczrs_parse(pointer: *const u8, length: usize) -> *mut u8 {
-    let bytes = unsafe { core::slice::from_raw_parts(pointer, length) };
+#[wasm_bindgen]
+impl Conversion {
+    /// JSON of [`crate::summary::Summary`].
+    #[wasm_bindgen(getter)]
+    pub fn summary(&self) -> String {
+        self.summary.clone()
+    }
 
+    /// Moves the DXF file out, so it is not copied.
+    pub fn take_dxf(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.dxf)
+    }
+}
+
+/// Parses an NCZ file and returns its objects as JSON.
+#[wasm_bindgen]
+pub fn parse(bytes: &[u8]) -> String {
     let objects = crate::parse_objects(bytes);
-    let serialized = serde_json::to_vec(&objects).unwrap_or_default();
 
-    let mut serialized = serialized.into_boxed_slice();
-    RESULT_LENGTH.store(serialized.len(), Ordering::Relaxed);
-    let result = serialized.as_mut_ptr();
-    core::mem::forget(serialized);
-
-    result
+    serde_json::to_string(&objects).unwrap_or_default()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn nczrs_result_length() -> usize {
-    RESULT_LENGTH.load(Ordering::Relaxed)
+/// Converts an NCZ file to DXF.
+#[wasm_bindgen]
+pub fn convert(bytes: &[u8]) -> Result<Conversion, JsError> {
+    let conversion = crate::summary::convert(bytes).map_err(|error| JsError::new(&error.to_string()))?;
+    let summary = serde_json::to_string(&conversion.summary)?;
+
+    Ok(Conversion {
+        summary,
+        dxf: conversion.dxf,
+    })
 }

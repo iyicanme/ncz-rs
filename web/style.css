@@ -62,7 +62,66 @@ code { font-family: var(--mono); font-size: 0.9em; }
 #status { min-height: 1.5em; margin: 0 0 16px; color: var(--muted); }
 #status.error { color: var(--error); }
 
-#file-info {
+#results { padding-bottom: 40px; }
+#results[hidden] { display: none; }
+
+/* Cards in a row stretch to the same height. */
+#cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.card {
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  min-width: 0;
+}
+.card h2 { margin: 0 0 10px; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+
+dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; margin: 0; }
+dt { color: var(--muted); }
+dt.nested { padding-left: 14px; }
+dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+
+#dxf-card { border-color: var(--accent); }
+
+/* The download button on the right, the details button below it across the full width. */
+#actions { display: flex; flex-direction: column; gap: 16px; margin: 16px 0 24px; }
+#download-dxf { align-self: flex-end; }
+
+.button {
+  display: inline-block;
+  padding: 8px 18px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--surface);
+  font: inherit;
+  font-weight: 600;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+/* In the muted colors of the cards, so it draws less attention than the download button. */
+.button.secondary {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 500;
+}
+.button.secondary:hover { filter: none; border-color: var(--muted); }
+.button.secondary::before { content: "▸ "; }
+.button.secondary[aria-expanded="true"]::before { content: "▾ "; }
+.button:disabled { opacity: 0.6; cursor: progress; }
+.button:hover { filter: brightness(1.1); }
+.button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+#details[hidden] { display: none; }
+
+#detail-info {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
@@ -132,7 +191,7 @@ tr.raw pre { margin: 0; max-height: 360px; overflow: auto; font-size: 0.8rem; wh
 
 #show-more {
   display: block;
-  margin: 12px auto 40px;
+  margin: 12px auto 0;
   padding: 6px 16px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -142,4 +201,3 @@ tr.raw pre { margin: 0; max-height: 360px; overflow: auto; font-size: 0.8rem; wh
   cursor: pointer;
 }
 #show-more[hidden] { display: none; }
-#results { padding-bottom: 40px; }
