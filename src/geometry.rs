@@ -15,6 +15,8 @@ pub struct Header {
     pub line_type: u8,
     /// Usually equal to `line_type`, sometimes with bit 0x80 set.
     pub line_type2: u8,
+    /// Colour index of the geometry, zero when it takes the color of its layer.
+    pub color: u8,
     pub attributes: Vec<u8>,
     pub lower_bound: Coordinate,
     pub upper_bound: Coordinate,
@@ -33,6 +35,7 @@ impl Header {
         let line_type = buffer.get_u8()?;
         let line_type2 = buffer.get_u8()?;
         let attributes = buffer.get_slice(16)?;
+        let color = attributes[3];
         let lower_bound = Coordinate::from_buffer_2d(buffer)?;
         let upper_bound = Coordinate::from_buffer_2d(buffer)?;
         let unknown2 = buffer.get_u32()?;
@@ -47,6 +50,7 @@ impl Header {
             layer_id,
             line_type,
             line_type2,
+            color,
             attributes,
             lower_bound,
             upper_bound,

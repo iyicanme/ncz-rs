@@ -93,6 +93,15 @@ fn dxf_line_type(line_type: &LineType) -> Option<dxf::tables::LineType> {
     })
 }
 
+/// Layer colors are assumed to share the AutoCAD color index palette. Zero is not a valid layer color in DXF,
+/// so it falls back to white.
+fn layer_color(color: u8) -> dxf::Color {
+    match color {
+        0 => dxf::Color::from_index(7),
+        color => dxf::Color::from_index(color),
+    }
+}
+
 /// Whether the geometry has a DXF counterpart, the others are left out of the drawing.
 pub fn is_exported(geometry: &Geometry) -> bool {
     !matches!(
@@ -206,6 +215,7 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                     if !layer.name.is_empty() && !exists {
                         drawing.add_layer(dxf::tables::Layer {
                             name: layer.name.clone(),
+                            color: layer_color(layer.color),
                             ..Default::default()
                         });
                     }
@@ -256,6 +266,8 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                         .flatten(),
                 };
 
+                let color = geometry.header().color;
+
                 let Some(entity_type) = entity_type(&mut drawing, geometry) else {
                     continue;
                 };
@@ -266,6 +278,10 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                 }
                 if let Some(line_type) = line_type {
                     entity.common.line_type_name = line_type;
+                }
+                // Zero means the geometry takes the color of its layer, which is the DXF default.
+                if color != 0 {
+                    entity.common.color = dxf::Color::from_index(color);
                 }
 
                 match &mut block {

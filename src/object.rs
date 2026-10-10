@@ -9,7 +9,7 @@ const RASTER_REFERENCE_LENGTH: usize = 181;
 
 #[derive(Debug, serde::Serialize)]
 pub struct Layer {
-    /// Probably a color index.
+    /// Index into the AutoCAD color index palette.
     pub color: u8,
     pub unknown1: u8,
     pub unknown2: u8,
