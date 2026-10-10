@@ -20,3 +20,19 @@ pub fn get_string_with_padding(
     let string = WINDOWS_1254.decode(&actual_bytes).0.to_string();
     Some(string)
 }
+
+pub fn get_varint_string(buffer: &mut impl ReadBuffer) -> Option<String> {
+    let mut string_length = 0usize;
+    let mut shift = 0;
+    loop {
+        let byte = buffer.get_u8()?;
+        string_length |= usize::from(byte & 0x7f) << shift;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            break;
+        }
+    }
+    let string_bytes = buffer.get_slice(string_length)?;
+
+    Some(String::from_utf8_lossy(&string_bytes).into_owned())
+}

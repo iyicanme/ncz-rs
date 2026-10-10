@@ -66,15 +66,18 @@ async function openFile(file) {
 }
 
 function showObjects(objects) {
-  const info = { Version: [], UserInformation: [], Metadata: [], LayerInformation: [], LineTypes: [], FileHeader: [] };
+  const info = { Version: [], UserInformation: [], Metadata: [], Layers: [], LayerInformation: [], LineTypes: [], Fonts: [], Libraries: [], FileHeader: [] };
   elements = [];
 
   objects.forEach((object, recordIndex) => {
+    // Records without fields, such as block ends, serialize as plain strings.
+    if (typeof object === "string") return;
     const [type, value] = Object.entries(object)[0];
 
     if (type === "Geometry") {
       const [kind, geometry] = Object.entries(value.geometry)[0];
-      elements.push({ recordIndex, kind: kindLabel(kind, geometry), layer: geometry.layer_id, details: describe(kind, geometry), raw: object });
+      const details = geometry.code ? `[${geometry.code}] ${describe(kind, geometry)}` : describe(kind, geometry);
+      elements.push({ recordIndex, kind: kindLabel(kind, geometry), layer: geometry.layer_id, details, raw: object });
     } else if (type === "Unknown") {
       elements.push({ recordIndex, kind: "Unknown record", layer: null, details: `type ${value.id}, ${value.bytes.length} bytes`, raw: object });
     } else {
@@ -94,7 +97,7 @@ function showObjects(objects) {
 function kindLabel(kind, geometry) {
   switch (kind) {
     case "PolyLine": return "Polyline";
-    case "SmoothCurve": return "Smooth curve";
+    case "BlockInsert": return "Block insert";
     case "Other": return `Other geometry (${geometry.id})`;
     default: return kind;
   }
@@ -102,20 +105,23 @@ function kindLabel(kind, geometry) {
 
 function describe(kind, g) {
   switch (kind) {
-    case "Point": return point(g.position);
+    case "Point": return g.name ? `${g.name} at ${point(g.position)}` : point(g.position);
     case "Line": return `${point(g.begin)} → ${point(g.end)}`;
     case "Circle": return `center ${point(g.center)}, r ${num(g.radius)}`;
-    case "Arc": return `center ${point(g.center)}, r ${num(g.radius)}, ${num(g.start_angle)}g → ${num(g.end_angle)}g`;
+    case "Arc": return `center ${point(g.center)}, r ${num(g.radius)}, ${num(g.start_angle)} rad → ${num(g.end_angle)} rad`;
     case "Text": {
       const styles = ["italic", "underline", "highlight"].filter((style) => g[style]);
       return `"${g.string}" at ${point(g.position)}, size ${num(g.size)}${styles.length ? `, ${styles.join(", ")}` : ""}`;
     }
-    case "Curve":
     case "PolyLine":
-    case "SmoothCurve": {
+    case "Contour": {
       const ends = g.points.length > 0 ? `: ${point(g.points[0])} … ${point(g.points[g.points.length - 1])}` : "";
-      return `${g.points.length} points${ends}`;
+      const closed = kind === "PolyLine" && (g.flags & 0x01) ? "closed, " : "";
+      return `${g.name ? `${g.name}, ` : ""}${closed}${g.points.length} points${ends}`;
     }
+    case "Symbol": return `symbol ${g.symbol} at ${point(g.position)}, scale ${num(g.scale)}`;
+    case "BlockInsert": return `"${g.name}" at ${point(g.position)}, rotation ${num(g.rotation)} rad, scale ${num(g.scale_x)} × ${num(g.scale_y)}`;
+    case "Image": return `image at ${point(g.position)}, ${g.properties.map((p) => p.key === "imageContent" ? `${p.key}: ${p.value.length} chars` : `${p.key}: ${p.value}`).join(", ")}`;
     default: return `${g.bytes.length} bytes`;
   }
 }
@@ -133,7 +139,11 @@ function renderFileInfo(info) {
 
   card("Version", info.Version.map((v) => [v.name]));
   card("User", info.UserInformation.map((u) => [u.name]));
-  card("Metadata", info.Metadata.map((m) => [key(`${m.name}: `), m.content]));
+  card("Metadata", info.Metadata.map((m) => [key(`${m.name}: `), m.bytes ? `${m.bytes.length} bytes of binary data` : m.content]));
+  const layers = info.Layers.flatMap((l) => l.layers).map((l) => l.name);
+  card("Layers", layers.length ? [[layers.join(", ")]] : []);
+  card("Fonts", info.Fonts.map((f) => [f.names.join(", ")]));
+  card("Libraries", info.Libraries.map((l) => [l.names.join(", ")]));
   card("Layers", info.LayerInformation.map((l) => [l.name, key(` (color 0x${l.color.toString(16).padStart(8, "0")})`)]));
 
   const lineTypes = info.LineTypes.flatMap((l) => l.types).map((t) => t.name).filter((name) => name.trim() !== "");

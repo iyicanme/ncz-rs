@@ -22,4 +22,14 @@ impl Coordinate {
 
         Some(Self { x, y, z })
     }
+
+    /// Reads a 2D coordinate followed by an `f32` elevation and 4 bytes of padding.
+    pub fn from_buffer_with_elevation(buffer: &mut impl ReadBuffer) -> Option<Self> {
+        let x = buffer.get_f64()?;
+        let y = buffer.get_f64()?;
+        let z = buffer.get_f32()?.into();
+        buffer.get_slice(4)?;
+
+        Some(Self { x, y, z })
+    }
 }

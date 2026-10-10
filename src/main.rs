@@ -5,7 +5,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 fn main() {
-    let filename = "ncz/PROJE11.NCZ";
+    let filename = std::env::args().nth(1).unwrap_or_else(|| "ncz/PROJE11.NCZ".to_string());
+    let filename = filename.as_str();
     let mut file = File::open(filename).unwrap();
     let mut bytes = vec![];
 
