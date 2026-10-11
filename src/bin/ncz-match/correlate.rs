@@ -48,7 +48,7 @@ fn is_known(key: &str) -> bool {
         "unknown",
         "attributes",
         "ctx.style",
-        "ctx.hatch",
+        "ctx.area",
         "flags",
         "line_type2",
         "snap",

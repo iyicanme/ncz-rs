@@ -127,6 +127,7 @@ function showSummary(file, { file: ncz, dxf }) {
     ["NetCAD version", ncz.version],
     ["User", ncz.user],
     ["Scale", ncz.scale ? `1:${Math.round(ncz.scale * 1000).toLocaleString()}` : null],
+    ["Coordinate system", ncz.coordinate_system],
     ["Extent", ncz.lower_bound && ncz.upper_bound ? extent(ncz.lower_bound, ncz.upper_bound) : null],
   ]);
 

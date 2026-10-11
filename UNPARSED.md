@@ -86,10 +86,10 @@ None of it is decoded. The first bytes look like u32 fields, e.g.
 
 Only the leading user name is read. The other ~350 bytes are ignored. They may hold a company, licence or date.
 
-### `HatchBegin` (id 30) / `HatchEnd` (id 31)
+### `AreaBegin` (id 30) / `AreaEnd` (id 31)
 
-The name is wrong: these are not hatches but an area record around polylines. Some files wrap every polyline in one,
-and nothing is filled.
+These were read as `HatchBegin`/`HatchEnd`, but they are not hatches. They are an area record around polylines.
+Some files wrap every polyline in one, and nothing is filled.
 
 - In 115 of the 120 files under 60 MB that have them, every polyline is wrapped, open ones included (127k
   polylines). In the other 5, fewer than 3% are.
@@ -142,9 +142,16 @@ These entries stay `MetadataContent::Binary`:
 `MPROJ` is decoded as `MetadataContent::Projection`. The 138 files where it used to decode as text held only zero bytes.
 
 - Byte 0 is the projection: 1 geographic, 2 for 6° zones, 3 for 3° zones, 0 undefined.
-- Byte 1 is the datum: 0 WGS-84, 1 ITRF, 4 ED50, 254 ED50 (HGK). 255 and 83 also occur.
+- Byte 1 is the datum: 0 WGS-84, 1 ITRF, 4 ED50, 254 ED50 (HGK). 255 and 83 also occur. Datum 0 is uncertain:
+  several of the 22 files with `(3, 0, 33)` are named as ITRF (`ALINCA_ITRF`, `AHMETLER_ITRF_…`).
 - Byte 5 is the central meridian in degrees (33 or 39 in the corpus).
-- Corpus: `(3, 1, 33)` ×220 and `(0, 0, 0)` ×126.
+- Corpus (files under 60 MB): `(3, 1, 33)` ×222, `(0, 0, 0)` ×127, `(3, 0, 33)` ×22, `(3, 4, 33)` ×21,
+  `(0, 255, 39)` ×5, `(0, 1, 0)` ×3, and single files with datum 255 or 83. 22 files have no `MPROJ`. No file under
+  60 MB has a `TILED_XML` entry to check the codes against.
+- The web summary names the coordinate system with its EPSG code: TUREF / TM27–TM45 (EPSG:5253–5259) for ITRF and
+  ED50 / TM27–TM45 (EPSG:2319–2325) for ED50 3° zones, the WGS 84 and ED50 UTM zones for 6° zones, and EPSG:4326,
+  5252 or 4230 for geographic coordinates. Datum 0 and the unknown datums get a description without a code. DXF
+  has no standard place for it, so the DXF export does not write it.
 - Bytes 2–4 and 6–136 are unknown. Bytes 12 onwards often hold f64-like values, maybe false easting or scale.
 
 `LEX.ST2` is decoded as `MetadataContent::LayerStyles`.
@@ -298,6 +305,23 @@ angle) are larger. Symbols with scale 0 are not exported.
 - `name`, `id` and `area` are exported as XDATA. `id` numbers the polylines of a file uniquely. `area` is zero on
   most polylines. On parcels it is within about 1% of the area of the points, and round values such as `7437.00`
   suggest the registered area rather than a computed one. NetCAD 5 exports none of the three.
+- **Widths are not found.** NetCAD 5 writes a constant width (groups 40/41) on some polylines, which the DXF export
+  does not:
+  - In `üniv-parsel nolu`, all 95 polylines of layer `IMAR_18UYGULAMA` get 0.5, and no other polyline gets a width.
+  - In `22 _ilahiyat`, three polylines in blocks get 0.15, 0.15 and 0.5.
+
+  Nothing stored in these files tells them apart:
+  - Each `IMAR_18UYGULAMA` parcel has a twin with the same points on another layer (e.g. `MAHALLE_100YILKESIN`),
+    which gets no width. The two records match in every field, the header attributes and the area record (§2)
+    included. Only `id`, the layer and the low bits of the area record's centroid differ.
+  - The two layers' records match except for name and color, and so do their `LEX.ST2` entries. The layer name
+    occurs nowhere else in the file.
+  - Color does not decide it: `ADA_ALN` is color 9 like `IMAR_18UYGULAMA`, and its polylines get no width. In
+    `22 _ilahiyat`, the polyline with width 0.5 shares color, line type and layer color with 226 polylines without one.
+  - `attributes[4..12]` (see above) is zero on all of them.
+
+  The width probably comes from NetCAD's settings rather than the file, e.g. a pen table or layers named `IMAR_*`.
+  Deciding it needs NetCAD: how `IMAR_18UYGULAMA` gets its thickness, or a test drawing with a polyline given a width.
 
 ### Contour (9)
 
