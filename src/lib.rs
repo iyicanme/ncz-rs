@@ -1,5 +1,5 @@
-use bopper::{BigEndianReadBuffer, ReadBuffer};
 use crate::object::Object;
+use bopper::{BigEndianReadBuffer, ReadBuffer};
 
 pub mod coordinate;
 #[cfg(feature = "dxf")]
