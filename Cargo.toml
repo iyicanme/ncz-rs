@@ -11,6 +11,11 @@ name = "nczrs"
 path = "src/main.rs"
 required-features = ["dxf"]
 
+[[bin]]
+name = "corpus-check"
+path = "src/bin/corpus-check.rs"
+required-features = ["dxf"]
+
 [features]
 default = ["dxf"]
 dxf = ["dep:dxf", "dep:image"]
