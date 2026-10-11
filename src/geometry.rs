@@ -1,6 +1,6 @@
 use crate::coordinate::Coordinate;
-use bopper::ReadBuffer;
 use crate::string::{get_string, get_string_with_padding, get_varint_string};
+use bopper::ReadBuffer;
 
 pub const POLYLINE_CLOSED: u32 = 0x01;
 
@@ -23,6 +23,9 @@ pub struct Header {
     pub unknown2: u32,
     /// Feature code, only present on geometries stored as object 22.
     pub code: Option<String>,
+    /// Only present on geometries stored as object 22. Usually a database record reference such as `@TAR453489`
+    /// (also `@PRG`, `@SEM`, `@TAB`), sometimes a free label such as a street name.
+    pub link: Option<String>,
 }
 
 impl Header {
@@ -39,10 +42,13 @@ impl Header {
         let lower_bound = Coordinate::from_buffer_2d(buffer)?;
         let upper_bound = Coordinate::from_buffer_2d(buffer)?;
         let unknown2 = buffer.get_u32()?;
-        let code = if has_code {
-            Some(get_string_with_padding(buffer, 27)?)
+        let (code, link) = if has_code {
+            (
+                Some(get_string_with_padding(buffer, 10)?),
+                Some(get_string_with_padding(buffer, 16)?),
+            )
         } else {
-            None
+            (None, None)
         };
 
         let header = Self {
@@ -56,6 +62,7 @@ impl Header {
             upper_bound,
             unknown2,
             code,
+            link,
         };
 
         Some((geometry_type, anchor, header))
@@ -407,7 +414,11 @@ impl Geometry {
                 let unknown3 = buffer.get_slice(24)?;
                 let data_length = buffer.get_u32()?;
                 let kind = buffer.get_u8()?;
-                let class_id = buffer.get_slice(16)?.iter().map(|b| format!("{b:02x}")).collect();
+                let class_id = buffer
+                    .get_slice(16)?
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
                 let unknown4 = buffer.get_u32()?;
                 let property_count = buffer.get_u32()?;
 

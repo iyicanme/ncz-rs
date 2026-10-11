@@ -1,7 +1,7 @@
 use crate::coordinate::Coordinate;
 use crate::geometry::{Geometry, POLYLINE_CLOSED};
 use crate::line_type::LineType;
-use crate::object::Object;
+use crate::object::{LAYER_VISIBLE, Object};
 
 /// Segment values at or above this refer to symbols rather than lengths.
 const SYMBOL_SEGMENT: f32 = 1000.0;
@@ -18,7 +18,11 @@ impl From<Coordinate> for dxf::Point {
     }
 }
 
-fn polyline(drawing: &mut dxf::Drawing, points: Vec<Coordinate>, closed: bool) -> dxf::entities::EntityType {
+fn polyline(
+    drawing: &mut dxf::Drawing,
+    points: Vec<Coordinate>,
+    closed: bool,
+) -> dxf::entities::EntityType {
     let mut polyline = dxf::entities::Polyline::default();
     polyline.set_is_3d_polyline(true);
     polyline.set_is_closed(closed);
@@ -33,11 +37,33 @@ fn polyline(drawing: &mut dxf::Drawing, points: Vec<Coordinate>, closed: bool) -
 }
 
 /// An axis aligned rectangle with the given opposite corners, at the elevation of the first.
-fn rectangle(drawing: &mut dxf::Drawing, corner1: Coordinate, corner2: Coordinate) -> dxf::entities::EntityType {
+fn rectangle(
+    drawing: &mut dxf::Drawing,
+    corner1: Coordinate,
+    corner2: Coordinate,
+) -> dxf::entities::EntityType {
+    rotated_rectangle(drawing, corner1, corner2, 0.0)
+}
+
+/// A rectangle given by two opposite corners before rotation, turned by `rotation` radians counter-clockwise
+/// (in the east-north frame) around `corner1`.
+fn rotated_rectangle(
+    drawing: &mut dxf::Drawing,
+    corner1: Coordinate,
+    corner2: Coordinate,
+    rotation: f64,
+) -> dxf::entities::EntityType {
     let z = corner1.z;
-    let points = [(corner1.x, corner1.y), (corner2.x, corner1.y), (corner2.x, corner2.y), (corner1.x, corner2.y)]
+    let (sin, cos) = rotation.sin_cos();
+    // NCZ stores northing as x and easting as y, so a counter-clockwise turn is clockwise in x/y.
+    let (width, height) = (corner2.x - corner1.x, corner2.y - corner1.y);
+    let points = [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)]
         .into_iter()
-        .map(|(x, y)| Coordinate { x, y, z })
+        .map(|(dx, dy)| Coordinate {
+            x: corner1.x + dx * cos + dy * sin,
+            y: corner1.y - dx * sin + dy * cos,
+            z,
+        })
         .collect();
 
     polyline(drawing, points, true)
@@ -45,7 +71,12 @@ fn rectangle(drawing: &mut dxf::Drawing, corner1: Coordinate, corner2: Coordinat
 
 /// Maps an alignment code to a DXF justification. Digits are assumed to follow the numeric keypad layout,
 /// e.g. 7 is top left and 3 is bottom right. The letters are guesses.
-fn text_justification(snap: char) -> (dxf::enums::HorizontalTextJustification, dxf::enums::VerticalTextJustification) {
+fn text_justification(
+    snap: char,
+) -> (
+    dxf::enums::HorizontalTextJustification,
+    dxf::enums::VerticalTextJustification,
+) {
     use dxf::enums::HorizontalTextJustification as H;
     use dxf::enums::VerticalTextJustification as V;
 
@@ -117,18 +148,28 @@ fn text_style(font: &str) -> Option<dxf::tables::Style> {
     })
 }
 
-/// Point names and feature codes as extended data, `None` when the geometry has neither.
+/// Point names, feature codes and links as extended data, `None` when the geometry has neither.
 fn x_data(geometry: &Geometry) -> Option<dxf::XData> {
     let name = match geometry {
         Geometry::Point { name, .. } => Some(name),
         _ => None,
     };
     let code = geometry.header().code.as_ref();
+    let link = geometry.header().link.as_ref();
 
-    let items: Vec<dxf::XDataItem> = [("NAME", name), ("CODE", code)]
+    let items: Vec<dxf::XDataItem> = [("NAME", name), ("CODE", code), ("LINK", link)]
         .into_iter()
-        .filter_map(|(key, value)| value.filter(|value| !value.is_empty()).map(|value| (key, value)))
-        .flat_map(|(key, value)| [dxf::XDataItem::Str(key.to_owned()), dxf::XDataItem::Str(value.clone())])
+        .filter_map(|(key, value)| {
+            value
+                .filter(|value| !value.is_empty())
+                .map(|value| (key, value))
+        })
+        .flat_map(|(key, value)| {
+            [
+                dxf::XDataItem::Str(key.to_owned()),
+                dxf::XDataItem::Str(value.clone()),
+            ]
+        })
         .collect();
 
     (!items.is_empty()).then(|| dxf::XData {
@@ -150,11 +191,17 @@ fn layer_color(color: u8) -> dxf::Color {
 pub fn is_exported(geometry: &Geometry) -> bool {
     !matches!(
         geometry,
-        Geometry::Symbol { .. } | Geometry::Image { .. } | Geometry::Empty { .. } | Geometry::Other { .. }
+        Geometry::Symbol { .. }
+            | Geometry::Image { .. }
+            | Geometry::Empty { .. }
+            | Geometry::Other { .. }
     )
 }
 
-fn entity_type(drawing: &mut dxf::Drawing, geometry: Geometry) -> Option<dxf::entities::EntityType> {
+fn entity_type(
+    drawing: &mut dxf::Drawing,
+    geometry: Geometry,
+) -> Option<dxf::entities::EntityType> {
     let entity = match geometry {
         Geometry::Point { position, .. } => {
             let point = dxf::entities::ModelPoint::new(position.into());
@@ -193,11 +240,16 @@ fn entity_type(drawing: &mut dxf::Drawing, geometry: Geometry) -> Option<dxf::en
             underline,
             ..
         } => {
-            let (horizontal_text_justification, vertical_text_justification) = text_justification(snap);
+            let (horizontal_text_justification, vertical_text_justification) =
+                text_justification(snap);
             let text = dxf::entities::Text {
                 location: position.into(),
                 text_height: size.into(),
-                value: if underline { format!("%%u{string}") } else { string },
+                value: if underline {
+                    format!("%%u{string}")
+                } else {
+                    string
+                },
                 rotation: f64::from(tilt).to_degrees(),
                 oblique_angle: if italic { ITALIC_OBLIQUE_ANGLE } else { 0.0 },
                 relative_x_scale_factor: 1.0,
@@ -231,13 +283,27 @@ fn entity_type(drawing: &mut dxf::Drawing, geometry: Geometry) -> Option<dxf::en
             };
             dxf::entities::EntityType::Insert(insert)
         }
-        Geometry::Window { corner1, corner2, .. } => rectangle(drawing, corner1, corner2),
-        Geometry::MapSheet { header, .. } => rectangle(drawing, header.lower_bound, header.upper_bound),
-        Geometry::Triangle { vertices: [first, second, third], .. } => {
-            let face = dxf::entities::Face3D::new(first.into(), second.into(), third.into(), third.into());
+        Geometry::Window {
+            corner1,
+            corner2,
+            rotation,
+            ..
+        } => rotated_rectangle(drawing, corner1, corner2, rotation.into()),
+        Geometry::MapSheet { header, .. } => {
+            rectangle(drawing, header.lower_bound, header.upper_bound)
+        }
+        Geometry::Triangle {
+            vertices: [first, second, third],
+            ..
+        } => {
+            let face =
+                dxf::entities::Face3D::new(first.into(), second.into(), third.into(), third.into());
             dxf::entities::EntityType::Face3D(face)
         }
-        Geometry::Symbol { .. } | Geometry::Image { .. } | Geometry::Empty { .. } | Geometry::Other { .. } => {
+        Geometry::Symbol { .. }
+        | Geometry::Image { .. }
+        | Geometry::Empty { .. }
+        | Geometry::Other { .. } => {
             return None;
         }
     };
@@ -271,6 +337,7 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                         drawing.add_layer(dxf::tables::Layer {
                             name: layer.name.clone(),
                             color: layer_color(layer.color),
+                            is_layer_on: layer.flags & LAYER_VISIBLE != 0,
                             ..Default::default()
                         });
                     }
@@ -319,7 +386,8 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                 drawing.header.maximum_drawing_extents = upper_bound.into();
             }
             Object::Thumbnail { bytes } => {
-                drawing.thumbnail = image::load_from_memory_with_format(&bytes, image::ImageFormat::Bmp).ok();
+                drawing.thumbnail =
+                    image::load_from_memory_with_format(&bytes, image::ImageFormat::Bmp).ok();
             }
             // Line type patterns are assumed to be in paper millimetres, which the map scale turns into metres.
             Object::Scale { scale } => drawing.header.line_type_scale = scale,
@@ -349,7 +417,9 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                 };
 
                 let text_style = match geometry {
-                    Geometry::Text { font, .. } => text_style_names.get(usize::from(font)).cloned().flatten(),
+                    Geometry::Text { font, .. } => {
+                        text_style_names.get(usize::from(font)).cloned().flatten()
+                    }
                     _ => None,
                 };
                 let x_data = x_data(&geometry);
@@ -361,7 +431,9 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                 };
 
                 let mut entity = dxf::entities::Entity::new(entity_type);
-                if let (dxf::entities::EntityType::Text(text), Some(text_style)) = (&mut entity.specific, text_style) {
+                if let (dxf::entities::EntityType::Text(text), Some(text_style)) =
+                    (&mut entity.specific, text_style)
+                {
                     text.text_style_name = text_style;
                 }
                 entity.common.x_data.extend(x_data);

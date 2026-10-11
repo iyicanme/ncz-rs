@@ -31,7 +31,8 @@ pub fn parse(bytes: &[u8]) -> String {
 /// Converts an NCZ file to DXF.
 #[wasm_bindgen]
 pub fn convert(bytes: &[u8]) -> Result<Conversion, JsError> {
-    let conversion = crate::summary::convert(bytes).map_err(|error| JsError::new(&error.to_string()))?;
+    let conversion =
+        crate::summary::convert(bytes).map_err(|error| JsError::new(&error.to_string()))?;
     let summary = serde_json::to_string(&conversion.summary)?;
 
     Ok(Conversion {

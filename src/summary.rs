@@ -67,7 +67,10 @@ pub fn convert(bytes: &[u8]) -> Result<Conversion, dxf::DxfError> {
                 file.layers = layers.iter().filter(|layer| !layer.name.is_empty()).count();
             }
             Object::LineTypes { types } => {
-                file.line_types = types.iter().filter(|line_type| !line_type.name.is_empty()).count();
+                file.line_types = types
+                    .iter()
+                    .filter(|line_type| !line_type.name.is_empty())
+                    .count();
             }
             Object::BlockBegin { .. } => file.blocks += 1,
             // Empty geometries are placeholders without content.

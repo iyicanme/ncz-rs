@@ -5,7 +5,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 fn main() {
-    let filename = std::env::args().nth(1).unwrap_or_else(|| "ncz/PROJE11.NCZ".to_string());
+    let filename = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "ncz/PROJE11.NCZ".to_string());
     let filename = filename.as_str();
     let mut file = File::open(filename).unwrap();
     let mut bytes = vec![];
@@ -28,6 +30,12 @@ fn main() {
     let _ = outfile.write(&serialized).unwrap();
 
     let drawing = objects_to_dxf(objects);
-    let dxf_filename = Path::new(filename).file_stem().unwrap().to_str().unwrap().to_string() + ".dxf";
+    let dxf_filename = Path::new(filename)
+        .file_stem()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string()
+        + ".dxf";
     drawing.save_file(dxf_filename).unwrap()
 }
