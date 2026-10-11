@@ -12,10 +12,34 @@ const APP_ID: &str = "NCZ";
 /// Slant of italic text in degrees. DXF has no italic flag for text, so it is drawn obliqued.
 const ITALIC_OBLIQUE_ANGLE: f64 = 15.0;
 
+/// NCZ stores northing as x and easting as y, DXF puts easting on X. Angles are already in the east-north frame.
 impl From<Coordinate> for dxf::Point {
     fn from(value: Coordinate) -> Self {
-        dxf::Point::new(value.x, value.y, value.z)
+        dxf::Point::new(value.y, value.x, value.z)
     }
+}
+
+/// Splits a contour into the runs that are drawn, matching NetCAD's DXF export. Flagged points mark where the
+/// elevation label goes. A segment between two flagged points is hidden, and flagged points at the start of the
+/// contour are not drawn at all.
+fn contour_runs(points: Vec<Coordinate>, point_flags: &[u8]) -> Vec<Vec<Coordinate>> {
+    let leading = point_flags.iter().take_while(|&&flag| flag != 0).count();
+    let mut runs = vec![];
+    let mut run = vec![];
+    let mut previous_flagged = false;
+
+    for (point, &flag) in points.into_iter().zip(point_flags).skip(leading) {
+        let flagged = flag != 0;
+        if flagged && previous_flagged {
+            runs.push(std::mem::take(&mut run));
+        }
+        run.push(point);
+        previous_flagged = flagged;
+    }
+    runs.push(run);
+
+    runs.retain(|run| run.len() >= 2);
+    runs
 }
 
 fn polyline(
@@ -198,10 +222,8 @@ pub fn is_exported(geometry: &Geometry) -> bool {
     )
 }
 
-fn entity_type(
-    drawing: &mut dxf::Drawing,
-    geometry: Geometry,
-) -> Option<dxf::entities::EntityType> {
+/// The entities that draw the geometry, usually one. Contours with gaps are drawn as several polylines.
+fn entity_types(drawing: &mut dxf::Drawing, geometry: Geometry) -> Vec<dxf::entities::EntityType> {
     let entity = match geometry {
         Geometry::Point { position, .. } => {
             let point = dxf::entities::ModelPoint::new(position.into());
@@ -264,7 +286,16 @@ fn entity_type(
         Geometry::PolyLine { points, flags, .. } => {
             polyline(drawing, points, flags & POLYLINE_CLOSED != 0)
         }
-        Geometry::Contour { points, .. } => polyline(drawing, points, false),
+        Geometry::Contour {
+            points,
+            point_flags,
+            ..
+        } => {
+            return contour_runs(points, &point_flags)
+                .into_iter()
+                .map(|run| polyline(drawing, run, false))
+                .collect();
+        }
         Geometry::BlockInsert {
             position,
             name,
@@ -304,11 +335,11 @@ fn entity_type(
         | Geometry::Image { .. }
         | Geometry::Empty { .. }
         | Geometry::Other { .. } => {
-            return None;
+            return vec![];
         }
     };
 
-    Some(entity)
+    vec![entity]
 }
 
 pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
@@ -426,32 +457,30 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
 
                 let color = geometry.header().color;
 
-                let Some(entity_type) = entity_type(&mut drawing, geometry) else {
-                    continue;
-                };
+                for entity_type in entity_types(&mut drawing, geometry) {
+                    let mut entity = dxf::entities::Entity::new(entity_type);
+                    if let (dxf::entities::EntityType::Text(text), Some(text_style)) =
+                        (&mut entity.specific, &text_style)
+                    {
+                        text.text_style_name = text_style.clone();
+                    }
+                    entity.common.x_data.extend(x_data.clone());
+                    if let Some(layer) = &layer {
+                        entity.common.layer = layer.clone();
+                    }
+                    if let Some(line_type) = &line_type {
+                        entity.common.line_type_name = line_type.clone();
+                    }
+                    // Zero means the geometry takes the color of its layer, which is the DXF default.
+                    if color != 0 {
+                        entity.common.color = dxf::Color::from_index(color);
+                    }
 
-                let mut entity = dxf::entities::Entity::new(entity_type);
-                if let (dxf::entities::EntityType::Text(text), Some(text_style)) =
-                    (&mut entity.specific, text_style)
-                {
-                    text.text_style_name = text_style;
-                }
-                entity.common.x_data.extend(x_data);
-                if let Some(layer) = layer {
-                    entity.common.layer = layer;
-                }
-                if let Some(line_type) = line_type {
-                    entity.common.line_type_name = line_type;
-                }
-                // Zero means the geometry takes the color of its layer, which is the DXF default.
-                if color != 0 {
-                    entity.common.color = dxf::Color::from_index(color);
-                }
-
-                match &mut block {
-                    Some(block) => block.entities.push(entity),
-                    None => {
-                        drawing.add_entity(entity);
+                    match &mut block {
+                        Some(block) => block.entities.push(entity),
+                        None => {
+                            drawing.add_entity(entity);
+                        }
                     }
                 }
             }

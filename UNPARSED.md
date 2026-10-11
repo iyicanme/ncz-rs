@@ -40,7 +40,13 @@ Python reader. Its hints were checked against the corpus before use, and none of
 Comparing NCZ files with DXF files that NetCAD 5 exported (`ncz-match`) also showed:
 
 - NetCAD writes the NCZ `y` as DXF X and `x` as DXF Y; the NCZ stores northing first. Angles (arc start and end, text
-  tilt) are in radians in the usual east-north frame and need no change. **The DXF export does not swap yet.**
+  tilt) are in radians in the usual east-north frame and need no change. The DXF export swaps them, and
+  `ncz-match` finds the same orientation in our output as in NetCAD's for all 5 sample pairs. Two checks over the
+  whole corpus agree:
+  - Coordinate ranges: 301 files are in a Turkish national grid, all with `x` as northing. No file was the other
+    way round. The other files use local grids (e.g. Karabük ≈ 100,000 on both axes), so ranges cannot tell.
+  - Text tilt against the nearest non-axis-parallel line: `x` as northing wins in 250 of 263 files with enough
+    aligned texts, and loses in none. The other 13 are cadastral files with few aligned texts, and they lean the same way.
 - NetCAD 5 writes DXF R12 in DOS code page 857 and turns Turkish letters in layer names into ASCII (`@EĞRİ` → `XEGRI`).
 
 The DXF export, now written as R2000, also gained:
@@ -251,11 +257,16 @@ Not exported. 472k symbols in 398 files are dropped.
 
 - `unknown3` holds 36 bytes.
 - `unknown3[0]` counts up from contour to contour in the one file checked (0, 1, 2, …), so it may be an index.
-- `point_flags` mark gaps, probably where the elevation label goes. NetCAD 5 splits a contour into one polyline per
-  drawn run. A segment between two flagged points is never drawn. Runs always end at the first flagged point of a gap,
-  and start again at the first unflagged point in 17 of 25 gaps (at the last flagged point in the rest). Treating a flag
-  on point `i` as hiding the segment `i → i+1` reproduces 73 of 81 polylines in `29B01D3A`. Today the whole contour is
-  exported as one continuous polyline.
+- `point_flags` (0 or 1) mark gaps, probably where the elevation label goes. NetCAD 5 exports one polyline per
+  drawn run. Flagged points at the start of a contour are not drawn at all. Anywhere else, only a segment between two
+  flagged points is hidden, so a run ends at the first flagged point of a gap and resumes at the last one. The DXF
+  export follows this rule, and all 81 contour polylines of `29B01D3A` match NetCAD's vertex for vertex. Only this
+  one file has been checked. That file has 7 fully flagged contours, which NetCAD also leaves out.
+  Across the corpus (434k contours in 78 files), flags are only 0 or 1.
+  - 36k contours (8%) are fully flagged, so they are not exported. Most are in the large city plans
+    (`KARABUK_İMAR_2015` 6,935, `ADN_den karabük` 5,568).
+  - 7,703 interior gaps are a single flagged point, and the rule draws straight through them. No sample DXF has one,
+    so this is unconfirmed.
 
 ### Block insert (13)
 
