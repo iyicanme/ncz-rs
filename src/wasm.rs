@@ -22,10 +22,10 @@ impl Conversion {
 
 /// Parses an NCZ file and returns its objects as JSON.
 #[wasm_bindgen]
-pub fn parse(bytes: &[u8]) -> String {
-    let objects = crate::parse_objects(bytes);
+pub fn parse(bytes: &[u8]) -> Result<String, JsError> {
+    let parsed = crate::parse_objects(bytes)?;
 
-    serde_json::to_string(&objects).unwrap_or_default()
+    Ok(serde_json::to_string(&parsed.objects)?)
 }
 
 /// Converts an NCZ file to DXF.

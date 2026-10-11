@@ -136,6 +136,7 @@ function showSummary(file, { file: ncz, dxf }) {
     ["Layers", ncz.layers.toLocaleString()],
     ["Line types", ncz.line_types.toLocaleString()],
     ["Blocks", ncz.blocks.toLocaleString()],
+    ["Unreadable objects", ncz.unreadable === 0 ? null : ncz.unreadable.toLocaleString()],
   ]);
 
   fill(dxfInfo, [

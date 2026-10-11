@@ -14,7 +14,17 @@ fn main() {
 
     file.read_to_end(&mut bytes).unwrap();
 
-    let objects = parse_objects(&bytes);
+    let parsed = parse_objects(&bytes).unwrap_or_else(|error| {
+        eprintln!("{filename}: {error}");
+        std::process::exit(1);
+    });
+    for failure in &parsed.failures {
+        eprintln!(
+            "warning: object {} at offset {:#x} (length {:?}) could not be decoded",
+            failure.object_type_id, failure.offset, failure.length
+        );
+    }
+    let objects = parsed.objects;
 
     let serialized = serde_json::to_vec(&objects).unwrap();
 

@@ -93,8 +93,8 @@ fn rotated_rectangle(
     polyline(drawing, points, true)
 }
 
-/// Maps an alignment code to a DXF justification. Digits are assumed to follow the numeric keypad layout,
-/// e.g. 7 is top left and 3 is bottom right. The letters are guesses.
+/// Maps an alignment code to a DXF justification, as NetCAD 5 exports it (4,082 texts). The digits do not follow the
+/// numeric keypad layout. Codes that NetCAD's export never showed (`P`, `U`, `Q`, …) fall back to centre middle.
 fn text_justification(
     snap: char,
 ) -> (
@@ -105,18 +105,16 @@ fn text_justification(
     use dxf::enums::VerticalTextJustification as V;
 
     match snap {
-        '1' => (H::Left, V::Bottom),
-        '2' => (H::Center, V::Bottom),
-        '3' => (H::Right, V::Bottom),
-        '4' => (H::Left, V::Middle),
-        '5' => (H::Center, V::Middle),
-        '6' => (H::Right, V::Middle),
-        '7' => (H::Left, V::Top),
-        '8' => (H::Center, V::Top),
-        '9' => (H::Right, V::Top),
-        'L' => (H::Left, V::Baseline),
-        'C' => (H::Center, V::Baseline),
-        'R' => (H::Right, V::Baseline),
+        'L' | '6' => (H::Left, V::Baseline),
+        '7' => (H::Center, V::Baseline),
+        'C' => (H::Center, V::Bottom),
+        'R' => (H::Right, V::Bottom),
+        '1' => (H::Left, V::Middle),
+        'M' => (H::Center, V::Middle),
+        '5' => (H::Right, V::Middle),
+        '2' => (H::Left, V::Top),
+        '3' => (H::Center, V::Top),
+        '4' => (H::Right, V::Top),
         _ => (H::Center, V::Middle),
     }
 }

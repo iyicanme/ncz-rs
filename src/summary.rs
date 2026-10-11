@@ -19,6 +19,8 @@ pub struct FileSummary {
     pub layers: usize,
     pub line_types: usize,
     pub blocks: usize,
+    /// Number of objects that could not be decoded.
+    pub unreadable: usize,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -46,10 +48,14 @@ pub struct Conversion {
 }
 
 /// Converts an NCZ file to DXF and describes both.
-pub fn convert(bytes: &[u8]) -> Result<Conversion, dxf::DxfError> {
-    let objects = crate::parse_objects(bytes);
+pub fn convert(bytes: &[u8]) -> Result<Conversion, Box<dyn std::error::Error>> {
+    let parsed = crate::parse_objects(bytes)?;
+    let objects = parsed.objects;
 
-    let mut file = FileSummary::default();
+    let mut file = FileSummary {
+        unreadable: parsed.failures.len(),
+        ..FileSummary::default()
+    };
     let mut skipped = BTreeMap::new();
     for object in &objects {
         match object {
