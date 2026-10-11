@@ -13,11 +13,13 @@ required-features = ["dxf"]
 
 [features]
 default = ["dxf"]
-dxf = ["dep:dxf"]
+dxf = ["dep:dxf", "dep:image"]
 
 [dependencies]
 bopper = { git = "https://github.com/iyicanme/bopper.git" }
 dxf = { version = "0.6.0", default-features = false, features = [], optional = true }
+# Must be the version the dxf crate uses, its thumbnail is an image of that crate.
+image = { version = "0.25", default-features = false, features = ["bmp"], optional = true }
 encoding_rs = { version = "0.8", default-features = false, features = ["alloc"] }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"] }

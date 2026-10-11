@@ -361,6 +361,7 @@ dependencies = [
  "bopper",
  "dxf",
  "encoding_rs",
+ "image",
  "jiff",
  "serde",
  "serde_json",

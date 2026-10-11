@@ -6,6 +6,12 @@ use crate::object::Object;
 /// Segment values at or above this refer to symbols rather than lengths.
 const SYMBOL_SEGMENT: f32 = 1000.0;
 
+/// Application name of the extended data that holds point names and feature codes.
+const APP_ID: &str = "NCZ";
+
+/// Slant of italic text in degrees. DXF has no italic flag for text, so it is drawn obliqued.
+const ITALIC_OBLIQUE_ANGLE: f64 = 15.0;
+
 impl From<Coordinate> for dxf::Point {
     fn from(value: Coordinate) -> Self {
         dxf::Point::new(value.x, value.y, value.z)
@@ -60,15 +66,18 @@ fn text_justification(snap: char) -> (dxf::enums::HorizontalTextJustification, d
     }
 }
 
+/// Whether the name can be used for a DXF table entry, such as a line type or a text style.
+fn is_valid_table_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| !c.is_control() && !"<>/\\\":;?*|=,`".contains(c))
+}
+
 /// Converts a line type to a DXF line type. Symbols are dropped, since they take no length in the pattern.
 /// Returns `None` for slots that hold no usable line type.
 fn dxf_line_type(line_type: &LineType) -> Option<dxf::tables::LineType> {
-    let is_valid_name = !line_type.name.is_empty()
-        && line_type
-            .name
-            .chars()
-            .all(|c| !c.is_control() && !"<>/\\\":;?*|=,`".contains(c));
-    if !is_valid_name {
+    if !is_valid_table_name(&line_type.name) {
         return None;
     }
 
@@ -90,6 +99,41 @@ fn dxf_line_type(line_type: &LineType) -> Option<dxf::tables::LineType> {
         total_pattern_length,
         dash_dot_space_lengths: segments,
         ..Default::default()
+    })
+}
+
+/// Converts a font file name to a text style. The style is named after the file stem, e.g. `ARIAL` for
+/// `ARIAL.NCF`, and is assumed to use the TrueType font of the same name.
+fn text_style(font: &str) -> Option<dxf::tables::Style> {
+    let name = font.rsplit_once('.').map_or(font, |(stem, _)| stem).trim();
+    if !is_valid_table_name(name) {
+        return None;
+    }
+
+    Some(dxf::tables::Style {
+        name: name.to_owned(),
+        primary_font_file_name: format!("{}.ttf", name.to_lowercase()),
+        ..Default::default()
+    })
+}
+
+/// Point names and feature codes as extended data, `None` when the geometry has neither.
+fn x_data(geometry: &Geometry) -> Option<dxf::XData> {
+    let name = match geometry {
+        Geometry::Point { name, .. } => Some(name),
+        _ => None,
+    };
+    let code = geometry.header().code.as_ref();
+
+    let items: Vec<dxf::XDataItem> = [("NAME", name), ("CODE", code)]
+        .into_iter()
+        .filter_map(|(key, value)| value.filter(|value| !value.is_empty()).map(|value| (key, value)))
+        .flat_map(|(key, value)| [dxf::XDataItem::Str(key.to_owned()), dxf::XDataItem::Str(value.clone())])
+        .collect();
+
+    (!items.is_empty()).then(|| dxf::XData {
+        application_name: APP_ID.to_owned(),
+        items,
     })
 }
 
@@ -145,14 +189,17 @@ fn entity_type(drawing: &mut dxf::Drawing, geometry: Geometry) -> Option<dxf::en
             size,
             tilt,
             snap,
+            italic,
+            underline,
             ..
         } => {
             let (horizontal_text_justification, vertical_text_justification) = text_justification(snap);
             let text = dxf::entities::Text {
                 location: position.into(),
                 text_height: size.into(),
-                value: string,
+                value: if underline { format!("%%u{string}") } else { string },
                 rotation: f64::from(tilt).to_degrees(),
+                oblique_angle: if italic { ITALIC_OBLIQUE_ANGLE } else { 0.0 },
                 relative_x_scale_factor: 1.0,
                 // Every justification but the default one positions the text at this point.
                 second_alignment_point: position.into(),
@@ -200,10 +247,18 @@ fn entity_type(drawing: &mut dxf::Drawing, geometry: Geometry) -> Option<dxf::en
 
 pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
     let mut drawing = dxf::Drawing::new();
+    // R12 has neither extended data nor a thumbnail.
+    drawing.header.version = dxf::enums::AcadVersion::R2000;
+    drawing.add_app_id(dxf::tables::AppId {
+        name: APP_ID.to_owned(),
+        ..Default::default()
+    });
     // Layer names by index, geometries refer to layers by their index in the layer table.
     let mut layer_names: Vec<String> = vec![];
     // Line type names by index, `None` where the slot could not be converted.
     let mut line_type_names: Vec<Option<String>> = vec![];
+    // Text style names by font index, `None` where the font could not be converted.
+    let mut text_style_names: Vec<Option<String>> = vec![];
     // Geometries between a block's begin and end belong to that block, not to the model space.
     let mut block: Option<dxf::Block> = None;
 
@@ -239,6 +294,33 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                     line_type_names.push(name);
                 }
             }
+            Object::Fonts { names } => {
+                for font in &names {
+                    let name = text_style(font).map(|style| {
+                        // Fonts that differ only in extension, e.g. `ARIAL.NCF` and `ARIAL.NCI`, share a style.
+                        let existing = drawing
+                            .styles()
+                            .find(|s| s.name.eq_ignore_ascii_case(&style.name))
+                            .map(|s| s.name.clone());
+                        existing.unwrap_or_else(|| {
+                            let name = style.name.clone();
+                            drawing.add_style(style);
+                            name
+                        })
+                    });
+                    text_style_names.push(name);
+                }
+            }
+            Object::Extents {
+                lower_bound,
+                upper_bound,
+            } => {
+                drawing.header.minimum_drawing_extents = lower_bound.into();
+                drawing.header.maximum_drawing_extents = upper_bound.into();
+            }
+            Object::Thumbnail { bytes } => {
+                drawing.thumbnail = image::load_from_memory_with_format(&bytes, image::ImageFormat::Bmp).ok();
+            }
             // Line type patterns are assumed to be in paper millimetres, which the map scale turns into metres.
             Object::Scale { scale } => drawing.header.line_type_scale = scale,
             Object::BlockBegin { name } => {
@@ -266,6 +348,12 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                         .flatten(),
                 };
 
+                let text_style = match geometry {
+                    Geometry::Text { font, .. } => text_style_names.get(usize::from(font)).cloned().flatten(),
+                    _ => None,
+                };
+                let x_data = x_data(&geometry);
+
                 let color = geometry.header().color;
 
                 let Some(entity_type) = entity_type(&mut drawing, geometry) else {
@@ -273,6 +361,10 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                 };
 
                 let mut entity = dxf::entities::Entity::new(entity_type);
+                if let (dxf::entities::EntityType::Text(text), Some(text_style)) = (&mut entity.specific, text_style) {
+                    text.text_style_name = text_style;
+                }
+                entity.common.x_data.extend(x_data);
                 if let Some(layer) = layer {
                     entity.common.layer = layer;
                 }

@@ -65,12 +65,15 @@ pub enum Object {
     /// Map scale divided by 1000, e.g. 0.5 for 1:500.
     Scale { scale: f64 },
     Extents { lower_bound: Coordinate, upper_bound: Coordinate },
+    /// Path of a linked file, e.g. a `.NCO` file. Empty in most files.
+    LinkedFile { path: String },
     Layers { unknown1: Vec<u8>, layers: Vec<Layer>, unknown2: Vec<u8> },
     LineTypes { types: Vec<LineType> },
     Fonts { names: Vec<String> },
     /// Symbol and block library files.
     Libraries { names: Vec<String> },
     BlockSectionBegin,
+    /// A BMP image, including its file header.
     Thumbnail { bytes: Vec<u8> },
     BlockBegin { name: String },
     BlockEnd,
@@ -126,6 +129,11 @@ impl Object {
                     lower_bound,
                     upper_bound,
                 })
+            }
+            5 => {
+                let path = get_string_with_padding(&mut buffer, 79)?;
+
+                Some(Self::LinkedFile { path })
             }
             6 => {
                 let unknown1 = buffer.get_slice(9)?;
