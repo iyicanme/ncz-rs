@@ -303,10 +303,16 @@ fn generate_table_reader(fun: &mut String, element: &Element) {
 }
 
 fn generate_table_writer(fun: &mut String, element: &Element) {
+    // ncz-rs patch: tables get handles, `first_handle` and the ones after it in the order of the spec.
+    fun.push_str("/// Number of handles that `add_table_code_pairs` uses, one per table.\n");
+    fun.push_str(&format!(
+        "pub(crate) const TABLE_COUNT: u64 = {};\n\n",
+        element.children.len()
+    ));
     fun.push_str(
-        "pub(crate) fn add_table_code_pairs(drawing: &Drawing, pairs: &mut Vec<CodePair>, write_handles: bool) {\n",
+        "pub(crate) fn add_table_code_pairs(drawing: &Drawing, pairs: &mut Vec<CodePair>, write_handles: bool, first_handle: Handle) {\n",
     );
-    for table in &element.children {
+    for (index, table) in element.children.iter().enumerate() {
         let mut indention = "";
         let mut predicates = vec![];
         if !min_version(table).is_empty() {
@@ -323,7 +329,7 @@ fn generate_table_writer(fun: &mut String, element: &Element) {
             ));
         }
         fun.push_str(&format!(
-            "    {indention}add_{collection}_code_pairs(pairs, drawing, write_handles);\n",
+            "    {indention}add_{collection}_code_pairs(pairs, drawing, write_handles, Handle(first_handle.0 + {index}));\n",
             collection = attr(table, "Collection"),
             indention = indention
         ));
@@ -338,7 +344,7 @@ fn generate_table_writer(fun: &mut String, element: &Element) {
     for table in &element.children {
         let table_item = &table.children[0];
         fun.push_str("#[allow(clippy::cognitive_complexity)] // long function, no good way to simplify this\n");
-        fun.push_str(&format!("fn add_{collection}_code_pairs(pairs: &mut Vec<CodePair>, drawing: &Drawing, write_handles: bool) {{\n", collection=attr(table, "Collection")));
+        fun.push_str(&format!("fn add_{collection}_code_pairs(pairs: &mut Vec<CodePair>, drawing: &Drawing, write_handles: bool, table_handle: Handle) {{\n", collection=attr(table, "Collection")));
         fun.push_str(&format!(
             "    if !drawing.{collection}().any(|_| true) {{ // is empty\n",
             collection = attr(table, "Collection")
@@ -352,11 +358,14 @@ fn generate_table_writer(fun: &mut String, element: &Element) {
             type_string = attr(table, "TypeString")
         ));
 
-        // TODO: assign and write table handles
-        // fun.push_str("    if write_handles {\n");
-        // fun.push_str("        pairs.push(CodePair::new_str(5, \"0\"));\n");
-        // fun.push_str("    }\n");
-        // fun.push_str("\n");
+        // ncz-rs patch: the table's handle, and its owner, which is none.
+        fun.push_str("    if write_handles && drawing.header.version >= AcadVersion::R13 {\n");
+        fun.push_str("        pairs.push(CodePair::new_string(5, &table_handle.as_string()));\n");
+        fun.push_str("        if drawing.header.version >= AcadVersion::R2000 {\n");
+        fun.push_str("            pairs.push(CodePair::new_str(330, \"0\"));\n");
+        fun.push_str("        }\n");
+        fun.push_str("    }\n");
+        fun.push('\n');
 
         let item_type = name(table_item);
 
@@ -380,6 +389,10 @@ fn generate_table_writer(fun: &mut String, element: &Element) {
         fun.push_str("            }\n");
         fun.push_str("        }\n");
         fun.push('\n');
+        // ncz-rs patch: a table record is owned by its table.
+        fun.push_str("        if write_handles && drawing.header.version >= AcadVersion::R2000 {\n");
+        fun.push_str("            pairs.push(CodePair::new_string(330, &table_handle.as_string()));\n");
+        fun.push_str("        }\n");
         fun.push_str("        pairs.push(CodePair::new_str(100, \"AcDbSymbolTableRecord\"));\n");
         fun.push_str(&format!(
             "        pairs.push(CodePair::new_str(100, \"{class_name}\"));\n",

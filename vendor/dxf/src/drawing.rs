@@ -177,9 +177,14 @@ impl Drawing {
     pub(crate) fn code_pairs(&self) -> DxfResult<Vec<CodePair>> {
         let write_handles = self.header.version >= AcadVersion::R13 || self.header.handles_enabled;
         let mut pairs = Vec::new();
-        self.header.add_code_pairs(&mut pairs);
+        // ncz-rs patch: the tables take the next handles, and the handle seed is written past them. Saving does not
+        // change the drawing, so the handles are the same on every save.
+        let first_table_handle = self.header.next_available_handle;
+        let mut header = self.header.clone();
+        header.next_available_handle = Handle(first_table_handle.0 + TABLE_COUNT);
+        header.add_code_pairs(&mut pairs);
         self.add_classes_pairs(&mut pairs);
-        self.add_tables_pairs(&mut pairs, write_handles);
+        self.add_tables_pairs(&mut pairs, write_handles, first_table_handle);
         self.add_blocks_pairs(&mut pairs, write_handles);
         self.add_entities_pairs(&mut pairs, write_handles);
         self.add_objects_pairs(&mut pairs);
@@ -922,10 +927,15 @@ impl Drawing {
 
         pairs.push(CodePair::new_str(0, "ENDSEC"));
     }
-    pub(crate) fn add_tables_pairs(&self, pairs: &mut Vec<CodePair>, write_handles: bool) {
+    pub(crate) fn add_tables_pairs(
+        &self,
+        pairs: &mut Vec<CodePair>,
+        write_handles: bool,
+        first_table_handle: Handle,
+    ) {
         pairs.push(CodePair::new_str(0, "SECTION"));
         pairs.push(CodePair::new_str(2, "TABLES"));
-        add_table_code_pairs(self, pairs, write_handles);
+        add_table_code_pairs(self, pairs, write_handles, first_table_handle);
         pairs.push(CodePair::new_str(0, "ENDSEC"));
     }
     pub(crate) fn add_blocks_pairs(&self, pairs: &mut Vec<CodePair>, write_handles: bool) {
@@ -2103,5 +2113,43 @@ mod tests {
         ]);
         let views = drawing.views().filter(|&v| v.name == "some-view");
         assert_eq!(1, views.count());
+    }
+
+    // ncz-rs patch: tables have handles, and no handle is written twice or at or past the handle seed.
+    #[test]
+    fn write_unique_handles_including_tables() {
+        let mut drawing = Drawing::new();
+        drawing.header.version = AcadVersion::R2000;
+        drawing.add_layer(Layer {
+            name: "layer".to_string(),
+            ..Default::default()
+        });
+        drawing.add_entity(Entity::new(EntityType::Line(Line::new(
+            Point::origin(),
+            Point::origin(),
+        ))));
+
+        let text = to_test_string(&drawing);
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        let pairs: Vec<(&str, &str)> = lines.chunks(2).map(|c| (c[0], c[1])).collect();
+        let parse = |h: &str| u64::from_str_radix(h, 16).unwrap();
+        let seed_at = pairs.iter().position(|&p| p == ("9", "$HANDSEED")).unwrap();
+        let seed = parse(pairs[seed_at + 1].1);
+        let handles: Vec<u64> = pairs
+            .iter()
+            .enumerate()
+            .filter(|&(i, p)| p.0 == "5" && i != seed_at + 1)
+            .map(|(_, p)| parse(p.1))
+            .collect();
+
+        let tables = pairs.iter().filter(|&&p| p == ("0", "TABLE")).count();
+        let table_handles = pairs
+            .windows(3)
+            .filter(|w| w[0] == ("0", "TABLE") && w[2].0 == "5")
+            .count();
+        assert!(tables > 0);
+        assert_eq!(tables, table_handles);
+        assert!(handles.iter().all(|&h| h != 0 && h < seed));
+        assert_eq!(handles.len(), handles.iter().collect::<std::collections::HashSet<_>>().len());
     }
 }

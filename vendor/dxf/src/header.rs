@@ -354,11 +354,12 @@ mod tests {
             Point::origin(),
             Point::origin(),
         ))));
+        // ncz-rs patch: the seed is written past the handles of the tables.
         assert_contains_pairs(
             &drawing,
             vec![
                 CodePair::new_str(9, "$HANDSEED"),
-                CodePair::new_str(5, "11"),
+                CodePair::new_string(5, &Handle(0x11 + crate::tables::TABLE_COUNT).as_string()),
             ],
         );
     }
@@ -380,7 +381,8 @@ mod tests {
             &drawing,
             vec![
                 CodePair::new_str(9, "$HANDSEED"),
-                CodePair::new_str(5, "15"),
+                // ncz-rs patch: the seed is written past the handles of the tables.
+                CodePair::new_string(5, &Handle(0x15 + crate::tables::TABLE_COUNT).as_string()),
             ],
         );
     }
