@@ -277,9 +277,17 @@ angle) are larger. Symbols with scale 0 are not exported.
 ### PolyLine (7)
 
 - `flags`: 71 distinct values. Common ones are 19 (`0x13`), 0, 1, 3, 17 and 18.
-    - Only `0x01` (closed) is used.
-    - `ncz.pat` names 4 as Curve, 16 as PolyLine and 64 as SmoothCurve. **Curves and smooth curves are exported as
-      straight segments.**
+    - `0x01` (closed), `0x04` and `0x40` are used.
+    - `ncz.pat` names 4 as Curve, 16 as PolyLine and 64 as SmoothCurve. They are rare: in files under 60 MB, 387 of
+      345k polylines are curves (14 files) and 10 are smooth curves (1 file).
+    - The points of a curve are digitized along it, typically 4–9 m apart and turning 5–30° at each point, so they lie
+      on the curve rather than tracing it densely.
+    - NetCAD 5 leaves curves out of its DXF export (all 6 in `üniv-parsel nolu` are missing), so its own curve is
+      not known. The DXF export draws both kinds as a centripetal Catmull-Rom spline through the points, with 8
+      segments per span and linear elevations. It keeps every stored point and stays within 0.25 m of the straight
+      segments on the samples. A closed curve with right-angle corners, such as in block `MEMBA` of `PLANKOTE`,
+      becomes a rounded outline. **Unconfirmed:** NetCAD may use another spline, and SmoothCurve may approximate the
+      points instead of passing through them.
     - `0x02` is unknown.
 - `name`, `id` and `area` are not exported.
 
