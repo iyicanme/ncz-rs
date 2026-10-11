@@ -220,8 +220,9 @@ Only the name is read. No block base point has been found, so DXF blocks are ins
   | `6` | left, baseline | | `5` | right, middle |
   | `7` | centre, baseline | | | |
 
-  `text_justification` does not follow this table yet. The letters `P U Q E H A O` did not occur in the exported files.
-  Values with no mapping fall back to Center/Middle:
+  The DXF export follows this table, and matches NetCAD's alignment on all 2,680 texts of the 5 sample pairs that
+  could be matched by position. The letters `P U Q E H A O` did not occur in the exported files and fall back to
+  centre/middle:
 
 | Value | Count                       |
 |-------|-----------------------------|
@@ -234,8 +235,6 @@ Only the name is read. No block base point has been found, so DXF blocks are ins
 | `H`   | 63                          |
 | `A`   | 51                          |
 | `O`   | 45                          |
-
-The mapped letters `L`, `C` and `R` are guesses.
 
 ### Symbol (6)
 
@@ -308,8 +307,8 @@ It never appears in the corpus. Any type that does not match falls back to `Geom
 
 ## 6. Robustness issues found in the corpus
 
-- **`224-2.NCZ`** is all zero bytes (1.6 MB). The parser turns it into 331k empty `Unknown { id: 0 }` objects. It should
-  be detected and rejected.
+- Every readable file starts with a `FileHeader` (id 1, length 120). Files that do not, such as **`224-2.NCZ`** (all
+  zero bytes, 1.6 MB), are rejected as not NCZ.
 - **`KARABUK_tüm-2012.NCZ`** (738 MB) breaks at offset `0xC951038`.
     - At that offset a Line record (object 22) is cut off in the middle of its bounds.
     - Bytes from a sorted string table follow: `XT`, `XTB`, `XY`, `Y_BINA`, `YAPI`, `Yerleştirilmiş Nesne`, …. The
@@ -317,6 +316,6 @@ It never appears in the corpus. Any type that does not match falls back to `Geom
       disk.
     - The parser never gets back in sync, so the remaining ~527 MB come out as garbage objects (ids 0, 52, 54, 65).
     - The fix is a resync step: scan ahead for a valid `type, length` pair.
-- `parse_objects` drops an object without any warning when its decoder returns `None`. No list of failures is kept for
-  diagnostics.
-- `ncz/.gitignore` is read like an NCZ file when the whole directory is processed.
+- Objects whose decoder fails are skipped, and `parse_objects` lists them as `failures` (offset, type id and declared
+  length). The CLI prints them as warnings and the web app shows their count. In `KARABUK_tüm-2012.NCZ` the first
+  failure is only at `0xF95114C`, since the garbage before it reads as objects of unknown type.

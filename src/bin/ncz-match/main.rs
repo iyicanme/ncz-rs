@@ -274,7 +274,9 @@ fn run(options: &Options) -> Result<(), String> {
             std::fs::read(ncz_path).map_err(|e| format!("{}: {e}", ncz_path.display()))?;
         let dxf_bytes =
             std::fs::read(dxf_path).map_err(|e| format!("{}: {e}", dxf_path.display()))?;
-        let objects = parse_objects(&ncz_bytes);
+        let objects = parse_objects(&ncz_bytes)
+            .map_err(|e| format!("{}: {e}", ncz_path.display()))?
+            .objects;
         let dxf = dxf::parse(&dxf_bytes).map_err(|e| format!("{}: {e}", dxf_path.display()))?;
 
         let items = ncz_items(&objects);
