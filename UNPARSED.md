@@ -197,8 +197,8 @@ Only the name is read. No block base point has been found, so DXF blocks are ins
 
 The dxf crate 0.6.2 left the vertices and `SEQEND` of a polyline in a block without handles, so ezdxf could not
 open such files (2 of the 5 sample exports), and it wrote a block's handle on both `BLOCK` and `ENDBLK`. Both are
-fixed in the vendored copy (`vendor/dxf/PATCHED.md`), and the sample exports have no missing or repeated handles.
-ezdxf still repairs the handles of the 7 table heads (`VPORT`, `LTYPE`, …) in every export, which it accepts.
+fixed in the vendored copy (`vendor/dxf/PATCHED.md`), as is a third bug: table heads (`VPORT`, `LTYPE`, …) had no
+handles. The 5 sample exports pass ezdxf's audit without errors, fixes or warnings.
 
 ## 4. Unknown fields in geometries
 
