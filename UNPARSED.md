@@ -8,6 +8,11 @@ To decode a field, draw test objects in NetCAD, export them to DXF, and run
 `cargo run --release --bin ncz-match -- file.NCZ [file.dxf] [more files or directories]`. It pairs each geometry with
 the entity NetCAD wrote for it and reports which NCZ fields predict which DXF group codes.
 
+After changing the parser or the DXF export, run `cargo run --release --bin corpus-check`. It converts every file in
+`ncz/`, checks the DXF output (handles, extended data, loading back) and compares the results with the baseline in
+`target/corpus-baseline.json`. `--update` accepts the new results. Files over 60 MB are left out unless `--all` is
+given, which needs `--jobs 1` on most machines (the largest file takes about 13 GB).
+
 Every geometry record is read to its last byte. A raw scan found no trailing bytes for any geometry type, so the
 remaining gaps are fields with unknown meaning, not unknown lengths.
 
