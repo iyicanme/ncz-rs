@@ -55,7 +55,12 @@ The DXF export, now written as R2000, also gained:
 - The thumbnail.
 - One text style per font.
 - Italic (15° oblique) and underlined text.
-- Point names and feature codes as XDATA under the application `NCZ`, as `NAME`/`CODE` key–value strings.
+- XDATA under the application `NCZ`, as key–value pairs: `NAME` for points and polylines, `ID` (a number, unique
+  per file) and `AREA` (only when not zero) for polylines, and `CODE` and `LINK` for all geometries. NetCAD 5's own
+  export writes no XDATA, nor any names, so this is data its export loses.
+- The dxf crate 0.6.2 writes extended data after a polyline's vertices and `SEQEND`, where readers attach it to the
+  `SEQEND`, and it has two handle bugs in blocks (see §2, `BlockBegin`). A patched copy is vendored in `vendor/dxf`
+  (see `vendor/dxf/PATCHED.md`).
 
 ## 1. Objects with no decoder
 
@@ -190,9 +195,10 @@ scale or rotation.
 
 Only the name is read. No block base point has been found, so DXF blocks are inserted with origin (0,0).
 
-The DXF crate gives handles only to model space entities. Block entities now get theirs when they are added, since
-before that a polyline in a block ended in a `SEQEND` with handle 0, and ezdxf could not open the file (2 of the 5
-sample exports). The crate still writes a block's handle on both `BLOCK` and `ENDBLK`, which ezdxf reports and accepts.
+The dxf crate 0.6.2 left the vertices and `SEQEND` of a polyline in a block without handles, so ezdxf could not
+open such files (2 of the 5 sample exports), and it wrote a block's handle on both `BLOCK` and `ENDBLK`. Both are
+fixed in the vendored copy (`vendor/dxf/PATCHED.md`), and the sample exports have no missing or repeated handles.
+ezdxf still repairs the handles of the 7 table heads (`VPORT`, `LTYPE`, …) in every export, which it accepts.
 
 ## 4. Unknown fields in geometries
 
@@ -289,7 +295,9 @@ angle) are larger. Symbols with scale 0 are not exported.
       becomes a rounded outline. **Unconfirmed:** NetCAD may use another spline, and SmoothCurve may approximate the
       points instead of passing through them.
     - `0x02` is unknown.
-- `name`, `id` and `area` are not exported.
+- `name`, `id` and `area` are exported as XDATA. `id` numbers the polylines of a file uniquely. `area` is zero on
+  most polylines. On parcels it is within about 1% of the area of the points, and round values such as `7437.00`
+  suggest the registered area rather than a computed one. NetCAD 5 exports none of the three.
 
 ### Contour (9)
 

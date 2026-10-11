@@ -30,6 +30,10 @@ serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 wasm-bindgen = "=0.2.129"
 uuid = { version = "1", default-features = false, features = ["js"] }
 
+# dxf 0.6.2 writes the extended data of polylines after their vertices, see vendor/dxf/PATCHED.md.
+[patch.crates-io]
+dxf = { path = "vendor/dxf" }
+
 [profile.release]
 opt-level = "s"
 lto = true

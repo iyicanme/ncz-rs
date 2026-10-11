@@ -250,20 +250,6 @@ fn symbol_footprint(
     })
 }
 
-/// Gives an entity its handles, including those of a polyline's vertices and end marker. The DXF crate assigns them
-/// only to entities added to the model space, and programs such as ezdxf cannot read a block whose polyline ends in
-/// a marker without a handle.
-fn with_handles(
-    drawing: &mut dxf::Drawing,
-    entity: dxf::entities::Entity,
-) -> dxf::entities::Entity {
-    drawing.add_entity(entity);
-    let last = drawing.entities().count() - 1;
-    drawing
-        .remove_entity(last)
-        .expect("the entity was just added")
-}
-
 /// A block that stands in for a symbol: its footprint, or a unit square around the insertion point when no
 /// instance has usable bounds. It is drawn by block, so it takes the layer, color and line type of each insert.
 fn symbol_block(
@@ -284,7 +270,7 @@ fn symbol_block(
 
     dxf::Block {
         name: symbol_block_name(symbol),
-        entities: vec![with_handles(drawing, entity)],
+        entities: vec![entity],
         ..Default::default()
     }
 }
@@ -366,28 +352,34 @@ fn text_style(font: &str) -> Option<dxf::tables::Style> {
     })
 }
 
-/// Point names, feature codes and links as extended data, `None` when the geometry has neither.
+/// Point and polyline names, polyline ids and areas, feature codes and links as extended data, as key-value pairs.
+/// `None` when the geometry has none of them.
 fn x_data(geometry: &Geometry) -> Option<dxf::XData> {
-    let name = match geometry {
-        Geometry::Point { name, .. } => Some(name),
-        _ => None,
-    };
-    let code = geometry.header().code.as_ref();
-    let link = geometry.header().link.as_ref();
+    let text = |value: &String| (!value.is_empty()).then(|| dxf::XDataItem::Str(value.clone()));
+    let header = geometry.header();
+    let mut values = vec![];
 
-    let items: Vec<dxf::XDataItem> = [("NAME", name), ("CODE", code), ("LINK", link)]
+    match geometry {
+        Geometry::Point { name, .. } => values.push(("NAME", text(name))),
+        // The area is the stored one, which on parcels is close to but not the area of the points, probably the
+        // registered area. Zero means none is stored.
+        Geometry::PolyLine { name, id, area, .. } => values.extend([
+            ("NAME", text(name)),
+            ("ID", i32::try_from(*id).ok().map(dxf::XDataItem::Long)),
+            (
+                "AREA",
+                (*area != 0.0).then_some(dxf::XDataItem::Real(*area)),
+            ),
+        ]),
+        _ => {}
+    }
+    values.push(("CODE", header.code.as_ref().and_then(text)));
+    values.push(("LINK", header.link.as_ref().and_then(text)));
+
+    let items: Vec<dxf::XDataItem> = values
         .into_iter()
-        .filter_map(|(key, value)| {
-            value
-                .filter(|value| !value.is_empty())
-                .map(|value| (key, value))
-        })
-        .flat_map(|(key, value)| {
-            [
-                dxf::XDataItem::Str(key.to_owned()),
-                dxf::XDataItem::Str(value.clone()),
-            ]
-        })
+        .filter_map(|(key, value)| value.map(|value| [dxf::XDataItem::Str(key.to_owned()), value]))
+        .flatten()
         .collect();
 
     (!items.is_empty()).then(|| dxf::XData {
@@ -718,7 +710,7 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                     }
 
                     match &mut block {
-                        Some(block) => block.entities.push(with_handles(&mut drawing, entity)),
+                        Some(block) => block.entities.push(entity),
                         None => {
                             drawing.add_entity(entity);
                         }
