@@ -161,7 +161,8 @@ pub enum Object {
         name: String,
         content: MetadataContent,
     },
-    /// Probably a hatch or fill; it wraps the next polyline until [`Object::HatchEnd`].
+    /// An area record around the polylines up to [`Object::HatchEnd`], despite the name not a hatch: some files wrap
+    /// every polyline in one, and NetCAD draws them as plain outlines. The body holds the name, bounds and centroid.
     HatchBegin {
         bytes: Vec<u8>,
     },
