@@ -1,5 +1,6 @@
 use crate::coordinate::Coordinate;
-use crate::geometry::{Geometry, POLYLINE_CLOSED};
+use crate::geometry::{Geometry, Header, POLYLINE_CLOSED};
+use std::collections::BTreeMap;
 use crate::line_type::LineType;
 use crate::object::{LAYER_VISIBLE, Object};
 
@@ -8,6 +9,10 @@ const SYMBOL_SEGMENT: f32 = 1000.0;
 
 /// Application name of the extended data that holds point names and feature codes.
 const APP_ID: &str = "NCZ";
+
+/// Prefix of the blocks that stand in for symbols. The shapes are in NetCAD's symbol libraries (`.NCS`), which are
+/// not part of the NCZ file, so each block holds only the symbol's footprint and can be redefined with the real shape.
+const SYMBOL_BLOCK_PREFIX: &str = "NCZ_SYMBOL_";
 
 /// Slant of italic text in degrees. DXF has no italic flag for text, so it is drawn obliqued.
 const ITALIC_OBLIQUE_ANGLE: f64 = 15.0;
@@ -91,6 +96,90 @@ fn rotated_rectangle(
         .collect();
 
     polyline(drawing, points, true)
+}
+
+fn symbol_block_name(symbol: u16) -> String {
+    format!("{SYMBOL_BLOCK_PREFIX}{symbol}")
+}
+
+/// The extent of a symbol in its own frame, before scaling and rotation, relative to its insertion point. In DXF
+/// axes, so X is easting.
+#[derive(Clone, Copy)]
+struct SymbolFootprint {
+    min: (f64, f64),
+    max: (f64, f64),
+    /// How far the instance it was measured on is turned from a right angle. Only an instance turned by a multiple
+    /// of a right angle gives the exact extent, others give a larger one.
+    deviation: f64,
+}
+
+/// Measures the footprint of a symbol from the bounds of one of its instances, which NetCAD stores in world
+/// coordinates. Symbol positions, scales and rotations match a DXF insert of the symbol drawn in its own frame.
+fn symbol_footprint(
+    header: &Header,
+    position: Coordinate,
+    scale: f64,
+    rotation: f64,
+) -> Option<SymbolFootprint> {
+    let (lower, upper) = (header.lower_bound, header.upper_bound);
+    // Instances without bounds store 1e30 as the lower and -1e30 as the upper bound.
+    if lower.x > upper.x || lower.y > upper.y || scale <= 0.0 {
+        return None;
+    }
+
+    let (sin, cos) = rotation.sin_cos();
+    let corners = [(lower.y, lower.x), (upper.y, lower.x), (upper.y, upper.x), (lower.y, upper.x)];
+    let local = corners.map(|(x, y)| {
+        let (dx, dy) = (x - position.y, y - position.x);
+        ((dx * cos + dy * sin) / scale, (-dx * sin + dy * cos) / scale)
+    });
+    let quarter = std::f64::consts::FRAC_PI_2;
+
+    Some(SymbolFootprint {
+        min: local
+            .iter()
+            .fold((f64::INFINITY, f64::INFINITY), |(x, y), p| (x.min(p.0), y.min(p.1))),
+        max: local.iter().fold((f64::NEG_INFINITY, f64::NEG_INFINITY), |(x, y), p| {
+            (x.max(p.0), y.max(p.1))
+        }),
+        deviation: (rotation - (rotation / quarter).round() * quarter).abs(),
+    })
+}
+
+/// Gives an entity its handles, including those of a polyline's vertices and end marker. The DXF crate assigns them
+/// only to entities added to the model space, and programs such as ezdxf cannot read a block whose polyline ends in
+/// a marker without a handle.
+fn with_handles(drawing: &mut dxf::Drawing, entity: dxf::entities::Entity) -> dxf::entities::Entity {
+    drawing.add_entity(entity);
+    let last = drawing.entities().count() - 1;
+    drawing
+        .remove_entity(last)
+        .expect("the entity was just added")
+}
+
+/// A block that stands in for a symbol: its footprint, or a unit square around the insertion point when no
+/// instance has usable bounds. It is drawn by block, so it takes the layer, color and line type of each insert.
+fn symbol_block(
+    drawing: &mut dxf::Drawing,
+    symbol: u16,
+    footprint: Option<SymbolFootprint>,
+) -> dxf::Block {
+    let (min, max) = footprint
+        .map(|footprint| (footprint.min, footprint.max))
+        .filter(|(min, max)| max.0 - min.0 > f64::EPSILON || max.1 - min.1 > f64::EPSILON)
+        .unwrap_or(((-0.5, -0.5), (0.5, 0.5)));
+    // `rectangle` takes NCZ coordinates, which have the axes the other way round.
+    let corner = |(x, y)| Coordinate { x: y, y: x, z: 0.0 };
+
+    let mut entity = dxf::entities::Entity::new(rectangle(drawing, corner(min), corner(max)));
+    entity.common.color = dxf::Color::by_block();
+    entity.common.line_type_name = "BYBLOCK".to_owned();
+
+    dxf::Block {
+        name: symbol_block_name(symbol),
+        entities: vec![with_handles(drawing, entity)],
+        ..Default::default()
+    }
 }
 
 /// Maps an alignment code to a DXF justification, as NetCAD 5 exports it (4,082 texts). The digits do not follow the
@@ -211,13 +300,12 @@ fn layer_color(color: u8) -> dxf::Color {
 
 /// Whether the geometry has a DXF counterpart, the others are left out of the drawing.
 pub fn is_exported(geometry: &Geometry) -> bool {
-    !matches!(
-        geometry,
-        Geometry::Symbol { .. }
-            | Geometry::Image { .. }
-            | Geometry::Empty { .. }
-            | Geometry::Other { .. }
-    )
+    match geometry {
+        // Symbols with no scale are not drawn, NetCAD stores empty bounds for them.
+        Geometry::Symbol { scale, .. } => *scale > 0.0,
+        Geometry::Image { .. } | Geometry::Empty { .. } | Geometry::Other { .. } => false,
+        _ => true,
+    }
 }
 
 /// The entities that draw the geometry, usually one. Contours with gaps are drawn as several polylines.
@@ -329,6 +417,23 @@ fn entity_types(drawing: &mut dxf::Drawing, geometry: Geometry) -> Vec<dxf::enti
                 dxf::entities::Face3D::new(first.into(), second.into(), third.into(), third.into());
             dxf::entities::EntityType::Face3D(face)
         }
+        Geometry::Symbol {
+            position,
+            scale,
+            rotation,
+            symbol,
+            ..
+        } if scale > 0.0 => {
+            let insert = dxf::entities::Insert {
+                name: symbol_block_name(symbol),
+                location: position.into(),
+                x_scale_factor: scale.into(),
+                y_scale_factor: scale.into(),
+                rotation: f64::from(rotation).to_degrees(),
+                ..Default::default()
+            };
+            dxf::entities::EntityType::Insert(insert)
+        }
         Geometry::Symbol { .. }
         | Geometry::Image { .. }
         | Geometry::Empty { .. }
@@ -356,6 +461,8 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
     let mut text_style_names: Vec<Option<String>> = vec![];
     // Geometries between a block's begin and end belong to that block, not to the model space.
     let mut block: Option<dxf::Block> = None;
+    // Footprints of the symbols in use, measured on the instance closest to a right angle.
+    let mut symbol_footprints: BTreeMap<u16, Option<SymbolFootprint>> = BTreeMap::new();
 
     for object in objects {
         match object {
@@ -455,6 +562,29 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
 
                 let color = geometry.header().color;
 
+                if let Geometry::Symbol {
+                    position,
+                    scale,
+                    rotation,
+                    symbol,
+                    ..
+                } = &geometry
+                    && is_exported(&geometry)
+                {
+                    let measured = symbol_footprint(
+                        geometry.header(),
+                        *position,
+                        f64::from(*scale),
+                        f64::from(*rotation),
+                    );
+                    let footprint = symbol_footprints.entry(*symbol).or_default();
+                    if let Some(measured) = measured
+                        && footprint.is_none_or(|f| measured.deviation < f.deviation)
+                    {
+                        *footprint = Some(measured);
+                    }
+                }
+
                 for entity_type in entity_types(&mut drawing, geometry) {
                     let mut entity = dxf::entities::Entity::new(entity_type);
                     if let (dxf::entities::EntityType::Text(text), Some(text_style)) =
@@ -475,7 +605,7 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                     }
 
                     match &mut block {
-                        Some(block) => block.entities.push(entity),
+                        Some(block) => block.entities.push(with_handles(&mut drawing, entity)),
                         None => {
                             drawing.add_entity(entity);
                         }
@@ -484,6 +614,11 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
             }
             _ => {}
         }
+    }
+
+    for (symbol, footprint) in symbol_footprints {
+        let block = symbol_block(&mut drawing, symbol, footprint);
+        drawing.add_block(block);
     }
 
     drawing
