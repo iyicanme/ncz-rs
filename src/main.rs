@@ -20,8 +20,8 @@ fn main() {
     });
     for failure in &parsed.failures {
         eprintln!(
-            "warning: object {} at offset {:#x} (length {:?}) could not be decoded",
-            failure.object_type_id, failure.offset, failure.length
+            "warning: object {} at offset {:#x} (length {:?}) could not be decoded, skipped {} bytes",
+            failure.object_type_id, failure.offset, failure.length, failure.skipped
         );
     }
     let objects = parsed.objects;

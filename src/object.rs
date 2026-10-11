@@ -185,6 +185,11 @@ pub enum Object {
 }
 
 impl Object {
+    /// Whether NCZ files use the object type. Type 10 is a marker without a body that has no decoder.
+    pub fn is_known_type(id: u8) -> bool {
+        matches!(id, 1..=6 | 8 | 10..=16 | 21..=23 | 25..=31 | 33 | 226)
+    }
+
     pub fn from_buffer(buffer: &mut impl ReadBuffer) -> Option<Self> {
         let object_type_id = buffer.get_u8()?;
         let object_length = buffer.get_u32()?.try_into().ok()?;

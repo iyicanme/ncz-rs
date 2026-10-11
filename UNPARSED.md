@@ -63,7 +63,7 @@ The DXF export, now written as R2000, also gained:
 |------------------------|----------|----------|--------------------------------------------------------------------------|
 | 10                     | always 0 | 16 files | A marker with no body. Its position in the stream may say what it marks. |
 | 226 `LayerInformation` | –        | 0 files  | Defined in `object.rs` and `ncz.pat` but never found in the corpus.      |
-| 0, 52, 54, 65          | –        | 2 files  | Caused by corrupt files (see §6), not real object types.                 |
+| 0, 52, 54, 65          | –        | 2 files  | Corrupt bytes (see §6), not real object types. Now skipped.              |
 
 ## 2. Objects kept as raw bytes
 
@@ -348,13 +348,17 @@ It never appears in the corpus. Any type that does not match falls back to `Geom
 
 - Every readable file starts with a `FileHeader` (id 1, length 120). Files that do not, such as **`224-2.NCZ`** (all
   zero bytes, 1.6 MB), are rejected as not NCZ.
-- **`KARABUK_tüm-2012.NCZ`** (738 MB) breaks at offset `0xC951038`.
+- An object whose decoder fails, or whose type no file uses, marks corruption. Across the corpus the only such type
+  in healthy files is 10, the empty marker. `parse_objects` lists each one as a failure (offset, type id, declared
+  length and bytes skipped). It then resumes where the next 8 objects in a row decode, trying the end of the
+  object's declared length first and then every following byte. A cut-off object at the end of a file is skipped
+  to the end. The CLI prints failures as warnings and the web app shows their count.
+- **`KARABUK_tüm-2012.NCZ`** (738 MB) is corrupt at offset `0xC951038`.
     - At that offset a Line record (object 22) is cut off in the middle of its bounds.
-    - Bytes from a sorted string table follow: `XT`, `XTB`, `XY`, `Y_BINA`, `YAPI`, `Yerleştirilmiş Nesne`, …. The
-      entries look like u32 length, name, `00 01 00 00`, u32 id. This looks like data that was overwritten, e.g. on
-      disk.
-    - The parser never gets back in sync, so the remaining ~527 MB come out as garbage objects (ids 0, 52, 54, 65).
-    - The fix is a resync step: scan ahead for a valid `type, length` pair.
-- Objects whose decoder fails are skipped, and `parse_objects` lists them as `failures` (offset, type id and declared
-  length). The CLI prints them as warnings and the web app shows their count. In `KARABUK_tüm-2012.NCZ` the first
-  failure is only at `0xF95114C`, since the garbage before it reads as objects of unknown type.
+    - 1,266 bytes from a sorted string table follow: `XT`, `XTB`, `XY`, `Y_BINA`, `YAPI`, `Yerleştirilmiş Nesne`, ….
+      The entries look like u32 length, name, `00 01 00 00`, u32 id. This looks like data that was overwritten, e.g.
+      on disk.
+    - Without a resync, the remaining ~527 MB came out as 21 garbage objects (ids 0, 52, 54, 65) with huge lengths.
+      With it, parsing resumes after the 1,266 bytes and reads the other 3.6 M objects (2.9 M points, 639 k lines,
+      33 k polylines, the spatial index) to the end of the file, in the same coordinate range as before the gap. This
+      is the only failure in the corpus.
