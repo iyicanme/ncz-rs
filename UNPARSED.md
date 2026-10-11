@@ -83,19 +83,34 @@ Only the leading user name is read. The other ~350 bytes are ignored. They may h
 
 ### `HatchBegin` (id 30) / `HatchEnd` (id 31)
 
-605,791 hatches in 135 files.
+The name is wrong: these are not hatches but an area record around polylines. Some files wrap every polyline in one,
+and nothing is filled.
 
-- The body is kept raw, usually 149 bytes, with longer ones growing in steps of 55 bytes. That suggests one fixed part
-  plus 55-byte repeated entries, perhaps pattern lines.
-- It starts with `ff ff ff ff`, then a u32 such as `0x13c`, `0x154` or `0x16c`, then `01 05`/`01 06`, then ASCII such as
-  `0/`.
-    - The u32 at offset 4 is `196 + 24 × n`, where `n` is the point count of the wrapped polyline, so it is probably a
-      length.
-    - Byte 20 equals `n` (4,846 of 4,848 hatches).
-    - The ASCII from byte 10 matches the polyline's name, e.g. a parcel number such as `0/02132`.
-    - NetCAD 5 exports hatches as loose LINE entities, so pattern, scale and angle need an R2000+ export or a reading of
-      the line geometry.
-- **The DXF export ignores hatches.** The polyline they wrap is exported as a plain outline, so the fill is lost.
+- In 115 of the 120 files under 60 MB that have them, every polyline is wrapped, open ones included (127k
+  polylines). In the other 5, fewer than 3% are.
+- NetCAD 5's DXF export writes nothing for them beyond the polyline. The fill lines inside block `VANTUZ` of
+  `PLANKOTE` are ordinary Line geometries.
+- The thumbnails, which NetCAD renders, show the wrapped polylines as outlines: the 4,528 parcels of `üniv-parsel nolu`
+  and the large `ILAHIYAT` area of `22 _ilahiyat`.
+- Exporting the polyline as an outline, as the DXF export does, therefore matches NetCAD.
+
+The body is kept raw. It is 149 bytes for one polyline and 55 bytes longer for each further one (up to 14 or more,
+probably holes). Offsets for one polyline:
+
+| Offset  | Content                                                                                                 |
+|---------|---------------------------------------------------------------------------------------------------------|
+| 0       | `ff ff ff ff`                                                                                           |
+| 4       | u32 `196 + 24 × n`, `n` the point count, probably a length                                              |
+| 8       | `01`                                                                                                    |
+| 9       | Name: length byte and 10 bytes, the polyline's name (a parcel number such as `0/02132`, or `X`)         |
+| 20      | u32 `n`                                                                                                 |
+| 24      | Bounding box, 4 f64 in NCZ axes                                                                         |
+| 56      | Number of polylines. Multi-polyline records hold `0x10001`, `0x20001`, …, so the high half differs.     |
+| 60      | Two points (4 f64). The first is the centroid. The second equals it or lies near it, maybe a label spot |
+| 92      | `01` (93%), `ff` (5.7%) or `00` (1.5%, only around polylines of fewer than 3 points). Not a fill flag.  |
+| 97      | u32 `n` again, then 12 zero bytes                                                                       |
+| 113     | Bounding box again                                                                                      |
+| 145     | u32 `n` again                                                                                           |
 
 ### `GeometryStyle` (id 33)
 
