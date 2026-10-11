@@ -1,8 +1,8 @@
 use crate::coordinate::Coordinate;
-use crate::geometry::{Geometry, Header, POLYLINE_CLOSED};
-use std::collections::BTreeMap;
+use crate::geometry::{Geometry, Header, POLYLINE_CLOSED, POLYLINE_CURVE, POLYLINE_SMOOTH_CURVE};
 use crate::line_type::LineType;
 use crate::object::{LAYER_VISIBLE, Object};
+use std::collections::BTreeMap;
 
 /// Segment values at or above this refer to symbols rather than lengths.
 const SYMBOL_SEGMENT: f32 = 1000.0;
@@ -13,6 +13,9 @@ const APP_ID: &str = "NCZ";
 /// Prefix of the blocks that stand in for symbols. The shapes are in NetCAD's symbol libraries (`.NCS`), which are
 /// not part of the NCZ file, so each block holds only the symbol's footprint and can be redefined with the real shape.
 const SYMBOL_BLOCK_PREFIX: &str = "NCZ_SYMBOL_";
+
+/// Straight segments that draw each span of a curved polyline.
+const CURVE_SEGMENTS_PER_SPAN: usize = 8;
 
 /// Slant of italic text in degrees. DXF has no italic flag for text, so it is drawn obliqued.
 const ITALIC_OBLIQUE_ANGLE: f64 = 15.0;
@@ -45,6 +48,95 @@ fn contour_runs(points: Vec<Coordinate>, point_flags: &[u8]) -> Vec<Vec<Coordina
 
     runs.retain(|run| run.len() >= 2);
     runs
+}
+
+/// A point on the centripetal Catmull-Rom span from `p1` to `p2`, with `p0` and `p3` as the neighbours, at `t`
+/// between 0 and 1. The centripetal form passes through every point without cusps or loops. Elevations are
+/// interpolated linearly, so the curve does not invent heights.
+fn catmull_rom(
+    p0: Coordinate,
+    p1: Coordinate,
+    p2: Coordinate,
+    p3: Coordinate,
+    t: f64,
+) -> Coordinate {
+    // Knot spacing is the square root of the distance. Coincident neighbours get a tiny spacing instead of zero.
+    let knot = |a: Coordinate, b: Coordinate| (a.x - b.x).hypot(a.y - b.y).sqrt().max(1e-9);
+    let t1 = knot(p0, p1);
+    let t2 = t1 + knot(p1, p2);
+    let t3 = t2 + knot(p2, p3);
+    let t = t1 + t * (t2 - t1);
+
+    let lerp = |a: (f64, f64), b: (f64, f64), ta: f64, tb: f64| {
+        let (wa, wb) = ((tb - t) / (tb - ta), (t - ta) / (tb - ta));
+        (a.0 * wa + b.0 * wb, a.1 * wa + b.1 * wb)
+    };
+    let (q0, q1, q2, q3) = ((p0.x, p0.y), (p1.x, p1.y), (p2.x, p2.y), (p3.x, p3.y));
+    let a1 = lerp(q0, q1, 0.0, t1);
+    let a2 = lerp(q1, q2, t1, t2);
+    let a3 = lerp(q2, q3, t2, t3);
+    let b1 = lerp(a1, a2, 0.0, t2);
+    let b2 = lerp(a2, a3, t1, t3);
+    let (x, y) = lerp(b1, b2, t1, t2);
+
+    let s = (t - t1) / (t2 - t1);
+    Coordinate {
+        x,
+        y,
+        z: p1.z + (p2.z - p1.z) * s,
+    }
+}
+
+/// Replaces the points of a curved polyline with points along a curve through them. NetCAD 5 leaves curves out of
+/// its DXF export, so its own curve is not known. A centripetal Catmull-Rom spline is assumed, which keeps every
+/// stored point. The ends of an open curve continue straight, as if mirrored.
+fn curve_points(points: Vec<Coordinate>, closed: bool) -> Vec<Coordinate> {
+    let mut points = points;
+    points.dedup_by(|a, b| a.x == b.x && a.y == b.y);
+    // A closed polyline may repeat its first point at the end.
+    if closed
+        && points.len() > 1
+        && points.first().map(|p| (p.x, p.y)) == points.last().map(|p| (p.x, p.y))
+    {
+        points.pop();
+    }
+    let n = points.len();
+    if n < 3 {
+        return points;
+    }
+
+    let mirror = |a: Coordinate, b: Coordinate| Coordinate {
+        x: 2.0 * a.x - b.x,
+        y: 2.0 * a.y - b.y,
+        z: a.z,
+    };
+    let at = |i: isize| -> Coordinate {
+        if closed {
+            points[i.rem_euclid(n as isize) as usize]
+        } else if i < 0 {
+            mirror(points[0], points[1])
+        } else if i as usize >= n {
+            mirror(points[n - 1], points[n - 2])
+        } else {
+            points[i as usize]
+        }
+    };
+
+    let spans = if closed { n } else { n - 1 };
+    let mut curve = Vec::with_capacity(spans * CURVE_SEGMENTS_PER_SPAN + 1);
+    for span in 0..spans as isize {
+        let (p0, p1, p2, p3) = (at(span - 1), at(span), at(span + 1), at(span + 2));
+        curve.push(p1);
+        for step in 1..CURVE_SEGMENTS_PER_SPAN {
+            let t = step as f64 / CURVE_SEGMENTS_PER_SPAN as f64;
+            curve.push(catmull_rom(p0, p1, p2, p3, t));
+        }
+    }
+    // A closed polyline is closed by its flag, an open one ends at its last point.
+    if !closed {
+        curve.push(points[n - 1]);
+    }
+    curve
 }
 
 fn polyline(
@@ -128,20 +220,32 @@ fn symbol_footprint(
     }
 
     let (sin, cos) = rotation.sin_cos();
-    let corners = [(lower.y, lower.x), (upper.y, lower.x), (upper.y, upper.x), (lower.y, upper.x)];
+    let corners = [
+        (lower.y, lower.x),
+        (upper.y, lower.x),
+        (upper.y, upper.x),
+        (lower.y, upper.x),
+    ];
     let local = corners.map(|(x, y)| {
         let (dx, dy) = (x - position.y, y - position.x);
-        ((dx * cos + dy * sin) / scale, (-dx * sin + dy * cos) / scale)
+        (
+            (dx * cos + dy * sin) / scale,
+            (-dx * sin + dy * cos) / scale,
+        )
     });
     let quarter = std::f64::consts::FRAC_PI_2;
 
     Some(SymbolFootprint {
         min: local
             .iter()
-            .fold((f64::INFINITY, f64::INFINITY), |(x, y), p| (x.min(p.0), y.min(p.1))),
-        max: local.iter().fold((f64::NEG_INFINITY, f64::NEG_INFINITY), |(x, y), p| {
-            (x.max(p.0), y.max(p.1))
-        }),
+            .fold((f64::INFINITY, f64::INFINITY), |(x, y), p| {
+                (x.min(p.0), y.min(p.1))
+            }),
+        max: local
+            .iter()
+            .fold((f64::NEG_INFINITY, f64::NEG_INFINITY), |(x, y), p| {
+                (x.max(p.0), y.max(p.1))
+            }),
         deviation: (rotation - (rotation / quarter).round() * quarter).abs(),
     })
 }
@@ -149,7 +253,10 @@ fn symbol_footprint(
 /// Gives an entity its handles, including those of a polyline's vertices and end marker. The DXF crate assigns them
 /// only to entities added to the model space, and programs such as ezdxf cannot read a block whose polyline ends in
 /// a marker without a handle.
-fn with_handles(drawing: &mut dxf::Drawing, entity: dxf::entities::Entity) -> dxf::entities::Entity {
+fn with_handles(
+    drawing: &mut dxf::Drawing,
+    entity: dxf::entities::Entity,
+) -> dxf::entities::Entity {
     drawing.add_entity(entity);
     let last = drawing.entities().count() - 1;
     drawing
@@ -370,7 +477,13 @@ fn entity_types(drawing: &mut dxf::Drawing, geometry: Geometry) -> Vec<dxf::enti
             dxf::entities::EntityType::Text(text)
         }
         Geometry::PolyLine { points, flags, .. } => {
-            polyline(drawing, points, flags & POLYLINE_CLOSED != 0)
+            let closed = flags & POLYLINE_CLOSED != 0;
+            let points = if flags & (POLYLINE_CURVE | POLYLINE_SMOOTH_CURVE) != 0 {
+                curve_points(points, closed)
+            } else {
+                points
+            };
+            polyline(drawing, points, closed)
         }
         Geometry::Contour {
             points,

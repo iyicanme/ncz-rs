@@ -3,6 +3,10 @@ use crate::string::{get_string, get_string_with_padding, get_varint_string};
 use bopper::ReadBuffer;
 
 pub const POLYLINE_CLOSED: u32 = 0x01;
+/// Drawn as a curve through the points, as `Curve` in `ncz.pat`.
+pub const POLYLINE_CURVE: u32 = 0x04;
+/// Drawn as a smooth curve, as `SmoothCurve` in `ncz.pat`.
+pub const POLYLINE_SMOOTH_CURVE: u32 = 0x40;
 
 /// Fields shared by every geometry record, read before the type specific part.
 #[derive(Debug, serde::Serialize)]
@@ -124,7 +128,8 @@ pub enum Geometry {
         font: u8,
         string: String,
     },
-    /// Bit 0x01 of `flags` marks a closed polyline, see [`POLYLINE_CLOSED`].
+    /// Bit 0x01 of `flags` marks a closed polyline, see [`POLYLINE_CLOSED`]. Bits 0x04 and 0x40 mark curves, see
+    /// [`POLYLINE_CURVE`] and [`POLYLINE_SMOOTH_CURVE`].
     PolyLine {
         #[serde(flatten)]
         header: Header,
