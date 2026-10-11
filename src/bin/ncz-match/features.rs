@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 pub type Features = BTreeMap<String, String>;
 
-/// Bytes of a hatch or geometry style body that are expanded into one feature each.
+/// Bytes of an area record or geometry style body that are expanded into one feature each.
 const MAX_CONTEXT_BYTES: usize = 64;
 /// Byte arrays longer than this are summarised by their length.
 const MAX_ARRAY: usize = 64;
@@ -41,7 +41,7 @@ pub fn ncz_items(objects: &[Object]) -> Vec<NczItem> {
     let mut line_type_names: Vec<String> = vec![];
     let mut block = None;
     let mut style: Option<(u8, &[u8])> = None;
-    let mut hatch: Option<&[u8]> = None;
+    let mut area: Option<&[u8]> = None;
 
     for object in objects {
         match object {
@@ -55,8 +55,8 @@ pub fn ncz_items(objects: &[Object]) -> Vec<NczItem> {
                 geometry_type,
                 bytes,
             } => style = Some((*geometry_type, bytes)),
-            Object::HatchBegin { bytes } => hatch = Some(bytes),
-            Object::HatchEnd { .. } => hatch = None,
+            Object::AreaBegin { bytes } => area = Some(bytes),
+            Object::AreaEnd { .. } => area = None,
             Object::Geometry { geometry } => {
                 let mut features = geometry_features(geometry);
                 let header = geometry.header();
@@ -70,8 +70,8 @@ pub fn ncz_items(objects: &[Object]) -> Vec<NczItem> {
                     features.insert("ctx.style.type".to_owned(), geometry_type.to_string());
                     insert_bytes(&mut features, "ctx.style", bytes);
                 }
-                if let Some(bytes) = hatch {
-                    insert_bytes(&mut features, "ctx.hatch", bytes);
+                if let Some(bytes) = area {
+                    insert_bytes(&mut features, "ctx.area", bytes);
                 }
 
                 items.push(NczItem {

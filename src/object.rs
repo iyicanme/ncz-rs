@@ -161,12 +161,13 @@ pub enum Object {
         name: String,
         content: MetadataContent,
     },
-    /// An area record around the polylines up to [`Object::HatchEnd`], despite the name not a hatch: some files wrap
-    /// every polyline in one, and NetCAD draws them as plain outlines. The body holds the name, bounds and centroid.
-    HatchBegin {
+    /// An area record around the polylines up to [`Object::AreaEnd`]. Some files wrap every polyline in one, and
+    /// NetCAD draws them as plain outlines, not filled. The body holds the name, bounds and centroid. Formerly read as
+    /// a hatch.
+    AreaBegin {
         bytes: Vec<u8>,
     },
-    HatchEnd {
+    AreaEnd {
         begin_length: u32,
     },
     /// Extra style for the next geometry, which has type `geometry_type`.
@@ -323,13 +324,13 @@ impl Object {
 
                 Some(Self::Metadata { name, content })
             }
-            30 => Some(Self::HatchBegin {
+            30 => Some(Self::AreaBegin {
                 bytes: buffer.to_vec(),
             }),
             31 => {
                 let begin_length = buffer.get_u32()?;
 
-                Some(Self::HatchEnd { begin_length })
+                Some(Self::AreaEnd { begin_length })
             }
             33 => {
                 let _length = buffer.get_u32()?;
