@@ -175,6 +175,10 @@ scale or rotation.
 
 Only the name is read. No block base point has been found, so DXF blocks are inserted with origin (0,0).
 
+The DXF crate gives handles only to model space entities. Block entities now get theirs when they are added, since
+before that a polyline in a block ended in a `SEQEND` with handle 0, and ezdxf could not open the file (2 of the 5
+sample exports). The crate still writes a block's handle on both `BLOCK` and `ENDBLK`, which ezdxf reports and accepts.
+
 ## 4. Unknown fields in geometries
 
 ### Shared header
@@ -238,10 +242,22 @@ Only the name is read. No block base point has been found, so DXF blocks are ins
 
 ### Symbol (6)
 
-Not exported. 472k symbols in 398 files are dropped.
+The shapes are in NetCAD's symbol libraries (`F2.NCS`, `PLAN.NCS`, `3D.NCS`, listed in `Libraries` and `SYMBOLS`),
+which are not part of the NCZ file. NetCAD 5 exports each symbol as loose LINE, CIRCLE and ARC entities.
 
-- The symbol definitions are in external libraries (`.NCI` files and `Libraries`), which are not parsed.
+- Position, scale and rotation (radians, counter-clockwise) behave exactly like a DXF insert of the symbol drawn in
+  its own frame. Mapped back into that frame, NetCAD's drawing of every instance of a symbol is the same shape, to
+  0.01 (4 rotated instances of symbol 1 and 37 of symbol 240 in `29B01D3A`).
+- The header bounds hold the drawn extent in world coordinates.
+- Scale 0 (13% of the 18.5k symbols in files under 60 MB, mostly symbol 0) comes with empty or zero-size bounds, so
+  nothing is drawn.
 - `unknown4` takes the values 0, 1 or 2.
+
+The DXF export writes each symbol as an INSERT of a block `NCZ_SYMBOL_<n>`, one per symbol number. The block holds a
+rectangle around the symbol's footprint, drawn by block, so a user who has the real symbols can redefine the block
+and every instance updates. The footprint is measured on the instance turned closest to a right angle. On the
+sample pairs, 140 of 144 exploded inserts match NetCAD's bounds exactly, and 4 (symbol 1, turned 0.1 rad off a right
+angle) are larger. Symbols with scale 0 are not exported.
 
 ### PolyLine (7)
 
