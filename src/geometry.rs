@@ -113,7 +113,8 @@ pub enum Geometry {
         italic: bool,
         underline: bool,
         highlight: bool,
-        unknown3: u8,
+        /// Index into the font table, see [`crate::object::Object::Fonts`].
+        font: u8,
         string: String,
     },
     /// Bit 0x01 of `flags` marks a closed polyline, see [`POLYLINE_CLOSED`].
@@ -123,7 +124,8 @@ pub enum Geometry {
         name: String,
         id: u32,
         flags: u32,
-        unknown3: Vec<u8>,
+        /// Area enclosed by the points. Some polylines store zero, and a few store a stale value.
+        area: f64,
         points: Vec<Coordinate>,
     },
     /// Probably a reference to a symbol in one of the libraries listed in [`crate::object::Object::Libraries`].
@@ -132,7 +134,8 @@ pub enum Geometry {
         header: Header,
         position: Coordinate,
         scale: f32,
-        unknown3: u32,
+        /// In radians.
+        rotation: f32,
         symbol: u16,
         unknown4: u8,
     },
@@ -178,7 +181,8 @@ pub enum Geometry {
         corner1: Coordinate,
         corner2: Coordinate,
         name: String,
-        unknown3: u32,
+        /// Probably in radians, it is zero for most windows.
+        rotation: f32,
     },
     /// A map sheet (pafta) frame, e.g. `G29-A-07-B-3-A`. Its extent is the header bounds.
     MapSheet {
@@ -244,7 +248,9 @@ impl Geometry {
             }
             4 => {
                 let radius = buffer.get_f64()?;
-                let unknown3 = buffer.get_slice(10)?;
+                // Single precision copies of the start and end angles.
+                buffer.get_slice(8)?;
+                let unknown3 = buffer.get_slice(2)?;
                 let start_angle = buffer.get_f64()?;
                 let end_angle = buffer.get_f64()?;
 
@@ -267,7 +273,7 @@ impl Geometry {
                 let underline = (flags & 0x02) != 0;
                 let highlight = (flags & 0x04) != 0;
 
-                let unknown3 = buffer.get_u8()?;
+                let font = buffer.get_u8()?;
                 let string = get_string(buffer)?;
 
                 Some(Self::Text {
@@ -280,13 +286,13 @@ impl Geometry {
                     italic,
                     underline,
                     highlight,
-                    unknown3,
+                    font,
                     string,
                 })
             }
             6 => {
                 let scale = buffer.get_f32()?;
-                let unknown3 = buffer.get_u32()?;
+                let rotation = buffer.get_f32()?;
                 let symbol = buffer.get_u16()?;
                 let unknown4 = buffer.get_u8()?;
 
@@ -294,7 +300,7 @@ impl Geometry {
                     header,
                     position: anchor,
                     scale,
-                    unknown3,
+                    rotation,
                     symbol,
                     unknown4,
                 })
@@ -303,7 +309,7 @@ impl Geometry {
                 let name = get_string_with_padding(buffer, 10)?;
                 let id = buffer.get_u32()?;
                 let flags = buffer.get_u32()?;
-                let unknown3 = buffer.get_slice(8)?;
+                let area = buffer.get_f64()?;
 
                 let mut points = vec![];
                 while let Some(c) = Coordinate::from_buffer_3d(buffer) {
@@ -315,7 +321,7 @@ impl Geometry {
                     name,
                     id,
                     flags,
-                    unknown3,
+                    area,
                     points,
                 })
             }
@@ -347,14 +353,14 @@ impl Geometry {
             10 => {
                 let name = get_string_with_padding(buffer, 17)?;
                 let corner2 = Coordinate::from_buffer_2d(buffer)?;
-                let unknown3 = buffer.get_u32()?;
+                let rotation = buffer.get_f32()?;
 
                 Some(Self::Window {
                     header,
                     corner1: anchor,
                     corner2,
                     name,
-                    unknown3,
+                    rotation,
                 })
             }
             11 => {
