@@ -1,10 +1,11 @@
 //! A short description of an NCZ file and of its conversion to DXF.
 
 use crate::coordinate::Coordinate;
-use crate::dxf_export::is_exported;
+use crate::dxf_export::{is_exported, write_dxf};
 use crate::geometry::Geometry;
 use crate::object::{MetadataContent, Object};
 use std::collections::BTreeMap;
+use std::io::Write;
 
 #[derive(Debug, Default, serde::Serialize)]
 pub struct FileSummary {
@@ -44,22 +45,41 @@ pub struct Summary {
     pub dxf: DxfSummary,
 }
 
-pub struct Conversion {
-    pub summary: Summary,
-    pub dxf: Vec<u8>,
+/// Counts the bytes written through it.
+struct CountingWriter<'a, W: Write> {
+    inner: &'a mut W,
+    count: usize,
 }
 
-/// Converts an NCZ file to DXF and describes both.
-pub fn convert(bytes: &[u8]) -> Result<Conversion, Box<dyn std::error::Error>> {
-    let parsed = crate::parse_objects(bytes)?;
-    let objects = parsed.objects;
+impl<W: Write> Write for CountingWriter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.count += written;
+        Ok(written)
+    }
 
-    let mut file = FileSummary {
-        unreadable: parsed.failures.len(),
-        ..FileSummary::default()
-    };
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Converts an NCZ file to DXF, writes it and describes both.
+pub fn convert(
+    bytes: &[u8],
+    writer: &mut impl Write,
+) -> Result<Summary, Box<dyn std::error::Error>> {
+    let mut file = FileSummary::default();
     let mut skipped = BTreeMap::new();
-    for object in &objects {
+    let mut counting = CountingWriter {
+        inner: writer,
+        count: 0,
+    };
+
+    let contents = write_dxf(bytes, &mut counting, |item| {
+        let Ok(object) = item else {
+            file.unreadable += 1;
+            return;
+        };
         match object {
             Object::Version { name } => file.version = Some(name.clone()),
             Object::Metadata {
@@ -103,31 +123,20 @@ pub fn convert(bytes: &[u8]) -> Result<Conversion, Box<dyn std::error::Error>> {
             }
             _ => {}
         }
-    }
+    })?;
+    counting.flush()?;
 
-    let drawing = crate::objects_to_dxf(objects);
-    let mut dxf = vec![];
-    drawing.save(&mut dxf)?;
-
-    let mut entities = BTreeMap::new();
-    let block_entities = drawing.blocks().flat_map(|block| block.entities.iter());
-    for entity in drawing.entities().chain(block_entities) {
-        *entities.entry(entity_name(&entity.specific)).or_default() += 1;
-    }
-
-    let summary = Summary {
+    Ok(Summary {
         file,
         dxf: DxfSummary {
-            size: dxf.len(),
-            entities,
-            layers: drawing.layers().count(),
-            line_types: drawing.line_types().count(),
-            blocks: drawing.blocks().count(),
+            size: counting.count,
+            entities: contents.entities,
+            layers: contents.layers,
+            line_types: contents.line_types,
+            blocks: contents.blocks,
             skipped,
         },
-    };
-
-    Ok(Conversion { summary, dxf })
+    })
 }
 
 /// Describes the coordinate system of an `MPROJ` entry. EPSG codes are given for the Turkish 3° zones (TUREF and
@@ -182,22 +191,6 @@ fn coordinate_system(projection: u8, datum: u8, central_meridian: u8) -> Option<
         Some(epsg) => format!("{name} (EPSG:{epsg})"),
         None => name,
     })
-}
-
-fn entity_name(entity: &dxf::entities::EntityType) -> &'static str {
-    use dxf::entities::EntityType;
-
-    match entity {
-        EntityType::Arc(_) => "ARC",
-        EntityType::Circle(_) => "CIRCLE",
-        EntityType::Face3D(_) => "3DFACE",
-        EntityType::Insert(_) => "INSERT",
-        EntityType::Line(_) => "LINE",
-        EntityType::ModelPoint(_) => "POINT",
-        EntityType::Polyline(_) => "POLYLINE",
-        EntityType::Text(_) => "TEXT",
-        _ => "OTHER",
-    }
 }
 
 #[cfg(test)]

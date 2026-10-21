@@ -1,4 +1,5 @@
-use nczrs::{objects_to_dxf, parse_objects};
+use nczrs::{parse_objects, write_dxf};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const USAGE: &str = "usage: nczrs [--json] [-o file.dxf] file.ncz
@@ -59,29 +60,37 @@ fn parse_options() -> Options {
 fn main() {
     let options = parse_options();
     let input = options.input.display();
+    let output = options.output.display();
 
     let bytes =
         std::fs::read(&options.input).unwrap_or_else(|error| exit(format!("{input}: {error}"), 1));
-    let parsed = parse_objects(&bytes).unwrap_or_else(|error| exit(format!("{input}: {error}"), 1));
-    drop(bytes);
-    for failure in &parsed.failures {
-        eprintln!(
-            "warning: object {} at offset {:#x} (length {:?}) could not be decoded, skipped {} bytes",
-            failure.object_type_id, failure.offset, failure.length, failure.skipped
-        );
-    }
-    let objects = parsed.objects;
 
     if options.json {
+        let parsed =
+            parse_objects(&bytes).unwrap_or_else(|error| exit(format!("{input}: {error}"), 1));
         let json_path =
             Path::new(options.input.file_stem().unwrap_or_default()).with_extension("json");
-        let serialized = serde_json::to_vec(&objects).expect("objects serialize");
+        let serialized = serde_json::to_vec(&parsed.objects).expect("objects serialize");
         std::fs::write(&json_path, serialized)
             .unwrap_or_else(|error| exit(format!("{}: {error}", json_path.display()), 1));
     }
 
-    let drawing = objects_to_dxf(objects);
-    drawing
-        .save_file(&options.output)
-        .unwrap_or_else(|error| exit(format!("{}: {error}", options.output.display()), 1));
+    let file = std::fs::File::create(&options.output)
+        .unwrap_or_else(|error| exit(format!("{output}: {error}"), 1));
+    let mut writer = std::io::BufWriter::new(file);
+    let result = write_dxf(&bytes, &mut writer, |item| {
+        if let Err(failure) = item {
+            eprintln!(
+                "warning: object {} at offset {:#x} (length {:?}) could not be decoded, skipped {} bytes",
+                failure.object_type_id, failure.offset, failure.length, failure.skipped
+            );
+        }
+    })
+    .and_then(|_| Ok(writer.flush()?));
+
+    if let Err(error) = result {
+        // A half written DXF is of no use.
+        let _ = std::fs::remove_file(&options.output);
+        exit(format!("{input}: {error}"), 1);
+    }
 }

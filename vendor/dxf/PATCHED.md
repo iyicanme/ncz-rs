@@ -21,6 +21,13 @@ top-level `Cargo.toml`. Changes are marked with `ncz-rs patch` comments:
   `write_proper_handseed_on_read_file` expect the moved seed, and `write_unique_handles_including_tables` checks that
   every handle is set, unique and below the seed. It fails on the unpatched release.
 
+- `src/stream_writer.rs` (new): `Drawing::save_streaming` writes a drawing up to its entities and returns an
+  `EntityStreamWriter`, which writes further entities one at a time, giving them handles from a range set aside in
+  `$HANDSEED`, so a large drawing need not hold its entities or collect its code pairs. `Drawing::prepare_entity` adds
+  the table entries an entity refers to, as `add_entity` does, through `ensure_entity_tables` in `src/drawing.rs`,
+  and `handles_needed` counts the handles to set aside. The tests `streamed_entities_match_saved_ones` and
+  `stops_when_the_reserved_handles_run_out` cover it.
+
 The tests `as_datetime_conversion_test` and `as_double_conversion_test` fail on the unpatched release too.
 
 Remove this copy and the patch entry once a release fixes these upstream (https://github.com/ixmilia/dxf-rs).

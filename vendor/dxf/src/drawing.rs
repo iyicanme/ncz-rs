@@ -657,13 +657,17 @@ impl Drawing {
         self.__blocks.last().unwrap()
     }
     fn add_entity_no_handle_set(&mut self, entity: Entity) -> &Entity {
-        self.ensure_mline_style_is_present_for_entity(&entity);
-        self.ensure_dimension_style_is_present_for_entity(&entity);
-        self.ensure_layer_is_present(&entity.common.layer);
-        self.ensure_line_type_is_present(&entity.common.line_type_name);
-        self.ensure_text_style_is_present_for_entity(&entity);
+        self.ensure_entity_tables(&entity);
         self.__entities.push(entity);
         self.__entities.last().unwrap()
+    }
+    /// ncz-rs patch: shared with `prepare_entity`, which streamed entities use.
+    pub(crate) fn ensure_entity_tables(&mut self, entity: &Entity) {
+        self.ensure_mline_style_is_present_for_entity(entity);
+        self.ensure_dimension_style_is_present_for_entity(entity);
+        self.ensure_layer_is_present(&entity.common.layer);
+        self.ensure_line_type_is_present(&entity.common.line_type_name);
+        self.ensure_text_style_is_present_for_entity(entity);
     }
     fn add_object_no_handle_set(&mut self, obj: Object) -> &Object {
         self.ensure_layer_is_present_for_object(&obj);

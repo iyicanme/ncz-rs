@@ -18,6 +18,8 @@ const rows = document.getElementById("rows");
 const showMore = document.getElementById("show-more");
 
 const PAGE_SIZE = 500;
+// Listing every object takes several times the file's size as JSON, which larger files do not fit.
+const DETAILS_MAX_BYTES = 50 * 1024 * 1024;
 
 const converterReady = loadConverter();
 
@@ -101,14 +103,16 @@ async function openFile(file) {
     }
 
     const dxfName = `${file.name.replace(/\.[^.]*$/, "")}.dxf`;
-    downloadDxf.href = URL.createObjectURL(new Blob([dxf], { type: "application/dxf" }));
+    downloadDxf.href = URL.createObjectURL(dxf);
     downloadDxf.download = dxfName;
     downloadDxf.textContent = `Download ${dxfName}`;
 
     currentFile = { name: file.name, bytes };
     showSummary(file, summary);
     results.hidden = false;
-    setStatus(`Converted in ${(elapsed / 1000).toFixed(1)} s.`);
+    const tooLarge = file.size > DETAILS_MAX_BYTES;
+    toggleDetails.hidden = tooLarge;
+    setStatus(`Converted in ${(elapsed / 1000).toFixed(1)} s.${tooLarge ? " The file is too large to list its contents." : ""}`);
   } catch (error) {
     console.error(error);
     // A Rust panic traps the module, which then can't be used again.

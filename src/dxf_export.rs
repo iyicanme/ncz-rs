@@ -2,7 +2,10 @@ use crate::coordinate::Coordinate;
 use crate::geometry::{Geometry, Header, POLYLINE_CLOSED, POLYLINE_CURVE, POLYLINE_SMOOTH_CURVE};
 use crate::line_type::LineType;
 use crate::object::{LAYER_VISIBLE, Object};
+use crate::{ObjectReader, ParseFailure};
+use dxf::stream_writer::handles_needed;
 use std::collections::BTreeMap;
+use std::io::Write;
 
 /// Segment values at or above this refer to symbols rather than lengths.
 const SYMBOL_SEGMENT: f32 = 1000.0;
@@ -550,26 +553,53 @@ fn entity_types(drawing: &mut dxf::Drawing, geometry: Geometry) -> Vec<dxf::enti
     vec![entity]
 }
 
-pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
-    let mut drawing = dxf::Drawing::new();
-    // R12 has neither extended data nor a thumbnail.
-    drawing.header.version = dxf::enums::AcadVersion::R2000;
-    drawing.add_app_id(dxf::tables::AppId {
-        name: APP_ID.to_owned(),
-        ..Default::default()
-    });
-    // Layer names by index, geometries refer to layers by their index in the layer table.
-    let mut layer_names: Vec<String> = vec![];
-    // Line type names by index, `None` where the slot could not be converted.
-    let mut line_type_names: Vec<Option<String>> = vec![];
-    // Text style names by font index, `None` where the font could not be converted.
-    let mut text_style_names: Vec<Option<String>> = vec![];
-    // Geometries between a block's begin and end belong to that block, not to the model space.
-    let mut block: Option<dxf::Block> = None;
-    // Footprints of the symbols in use, measured on the instance closest to a right angle.
-    let mut symbol_footprints: BTreeMap<u16, Option<SymbolFootprint>> = BTreeMap::new();
+/// The DXF type name of an entity, as the summary counts it.
+fn entity_name(entity: &dxf::entities::EntityType) -> &'static str {
+    use dxf::entities::EntityType;
 
-    for object in objects {
+    match entity {
+        EntityType::Arc(_) => "ARC",
+        EntityType::Circle(_) => "CIRCLE",
+        EntityType::Face3D(_) => "3DFACE",
+        EntityType::Insert(_) => "INSERT",
+        EntityType::Line(_) => "LINE",
+        EntityType::ModelPoint(_) => "POINT",
+        EntityType::Polyline(_) => "POLYLINE",
+        EntityType::Text(_) => "TEXT",
+        _ => "OTHER",
+    }
+}
+
+/// Names that geometries refer to by index, from the table objects read so far.
+#[derive(Default)]
+struct Names {
+    /// Layer names by index, geometries refer to layers by their index in the layer table.
+    layers: Vec<String>,
+    /// Line type names by index, `None` where the slot could not be converted.
+    line_types: Vec<Option<String>>,
+    /// Text style names by font index, `None` where the font could not be converted.
+    text_styles: Vec<Option<String>>,
+}
+
+/// The line type of the drawing with the name, ignoring case as DXF does.
+fn find_line_type(drawing: &dxf::Drawing, name: &str) -> Option<String> {
+    drawing
+        .line_types()
+        .find(|l| l.name.eq_ignore_ascii_case(name))
+        .map(|l| l.name.clone())
+}
+
+/// The text style of the drawing with the name, ignoring case.
+fn find_style(drawing: &dxf::Drawing, name: &str) -> Option<String> {
+    drawing
+        .styles()
+        .find(|s| s.name.eq_ignore_ascii_case(name))
+        .map(|s| s.name.clone())
+}
+
+impl Names {
+    /// Adds the entries of a table object to the drawing and records their names.
+    fn add(&mut self, drawing: &mut dxf::Drawing, object: &Object) {
         match object {
             Object::Layers { layers, .. } => {
                 for layer in layers {
@@ -582,43 +612,163 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                             ..Default::default()
                         });
                     }
-                    layer_names.push(layer.name);
+                    self.layers.push(layer.name.clone());
                 }
             }
             Object::LineTypes { types } => {
-                for line_type in &types {
+                for line_type in types {
+                    // A repeated name reuses the first line type.
                     let name = dxf_line_type(line_type).map(|dxf_line_type| {
-                        // DXF names are case insensitive, a repeated name reuses the first line type.
-                        let existing = drawing
-                            .line_types()
-                            .find(|l| l.name.eq_ignore_ascii_case(&dxf_line_type.name))
-                            .map(|l| l.name.clone());
-                        existing.unwrap_or_else(|| {
+                        find_line_type(drawing, &dxf_line_type.name).unwrap_or_else(|| {
                             let name = dxf_line_type.name.clone();
                             drawing.add_line_type(dxf_line_type);
                             name
                         })
                     });
-                    line_type_names.push(name);
+                    self.line_types.push(name);
                 }
             }
             Object::Fonts { names } => {
-                for font in &names {
+                for font in names {
+                    // Fonts that differ only in extension, e.g. `ARIAL.NCF` and `ARIAL.NCI`, share a style.
                     let name = text_style(font).map(|style| {
-                        // Fonts that differ only in extension, e.g. `ARIAL.NCF` and `ARIAL.NCI`, share a style.
-                        let existing = drawing
-                            .styles()
-                            .find(|s| s.name.eq_ignore_ascii_case(&style.name))
-                            .map(|s| s.name.clone());
-                        existing.unwrap_or_else(|| {
+                        find_style(drawing, &style.name).unwrap_or_else(|| {
                             let name = style.name.clone();
                             drawing.add_style(style);
                             name
                         })
                     });
-                    text_style_names.push(name);
+                    self.text_styles.push(name);
                 }
             }
+            _ => {}
+        }
+    }
+
+    /// Records the names of a table object whose entries [`Names::add`] already added, giving the same names.
+    fn find(&mut self, drawing: &dxf::Drawing, object: &Object) {
+        match object {
+            Object::Layers { layers, .. } => {
+                self.layers
+                    .extend(layers.iter().map(|layer| layer.name.clone()));
+            }
+            Object::LineTypes { types } => {
+                self.line_types.extend(types.iter().map(|line_type| {
+                    dxf_line_type(line_type).and_then(|l| find_line_type(drawing, &l.name))
+                }));
+            }
+            Object::Fonts { names } => {
+                self.text_styles.extend(
+                    names
+                        .iter()
+                        .map(|font| text_style(font).and_then(|s| find_style(drawing, &s.name))),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The entities that draw the geometry, with its layer, line type, text style, color and extended data. Polyline
+/// vertices take handles from `drawing`.
+fn geometry_entities(
+    drawing: &mut dxf::Drawing,
+    names: &Names,
+    geometry: Geometry,
+) -> Vec<dxf::entities::Entity> {
+    let layer = names
+        .layers
+        .get(usize::from(geometry.header().layer_id))
+        .filter(|name| !name.is_empty())
+        .cloned();
+    // Text has a line type index too, but DXF text is not drawn with one.
+    let line_type = match geometry {
+        Geometry::Text { .. } => None,
+        _ => names
+            .line_types
+            .get(usize::from(geometry.header().line_type))
+            .cloned()
+            .flatten(),
+    };
+    let text_style = match geometry {
+        Geometry::Text { font, .. } => names.text_styles.get(usize::from(font)).cloned().flatten(),
+        _ => None,
+    };
+    let x_data = x_data(&geometry);
+    let color = geometry.header().color;
+
+    entity_types(drawing, geometry)
+        .into_iter()
+        .map(|entity_type| {
+            let mut entity = dxf::entities::Entity::new(entity_type);
+            if let (dxf::entities::EntityType::Text(text), Some(text_style)) =
+                (&mut entity.specific, &text_style)
+            {
+                text.text_style_name = text_style.clone();
+            }
+            entity.common.x_data.extend(x_data.clone());
+            if let Some(layer) = &layer {
+                entity.common.layer = layer.clone();
+            }
+            if let Some(line_type) = &line_type {
+                entity.common.line_type_name = line_type.clone();
+            }
+            // Zero means the geometry takes the color of its layer, which is the DXF default.
+            if color != 0 {
+                entity.common.color = dxf::Color::from_index(color);
+            }
+            entity
+        })
+        .collect()
+}
+
+/// What the DXF output holds, for the summary.
+#[derive(Debug, Default)]
+pub struct DxfContents {
+    /// Number of entities of each DXF type, in the model space and in blocks.
+    pub entities: BTreeMap<&'static str, usize>,
+    pub layers: usize,
+    pub line_types: usize,
+    pub blocks: usize,
+}
+
+/// Converts an NCZ file to DXF and writes it. Everything but the entities of the model space is made in a first
+/// pass over the file, and those entities in a second pass, written as they are made, so neither the objects of the
+/// file nor the entities are held at once. `inspect` sees every object and failure of the first pass.
+pub fn write_dxf(
+    bytes: &[u8],
+    writer: &mut impl Write,
+    mut inspect: impl FnMut(&Result<Object, ParseFailure>),
+) -> Result<DxfContents, Box<dyn std::error::Error>> {
+    let mut drawing = dxf::Drawing::new();
+    // R12 has neither extended data nor a thumbnail.
+    drawing.header.version = dxf::enums::AcadVersion::R2000;
+    drawing.add_app_id(dxf::tables::AppId {
+        name: APP_ID.to_owned(),
+        ..Default::default()
+    });
+    // Polyline vertices of the model space take their handles from here, since the stream writer replaces them.
+    let mut scratch = dxf::Drawing::new();
+    let mut contents = DxfContents::default();
+    let mut count = |entity: &dxf::entities::Entity| {
+        *contents
+            .entities
+            .entry(entity_name(&entity.specific))
+            .or_default() += 1;
+    };
+
+    // First pass: tables, blocks, header values, and what the entities of the model space need.
+    let mut names = Names::default();
+    // Geometries between a block's begin and end belong to that block, not to the model space.
+    let mut block: Option<dxf::Block> = None;
+    // Footprints of the symbols in use, measured on the instance closest to a right angle.
+    let mut symbol_footprints: BTreeMap<u16, Option<SymbolFootprint>> = BTreeMap::new();
+    let mut reserved_handles = 0;
+    for item in ObjectReader::new(bytes)? {
+        inspect(&item);
+        let Ok(object) = item else { continue };
+        names.add(&mut drawing, &object);
+        match object {
             Object::Extents {
                 lower_bound,
                 upper_bound,
@@ -644,29 +794,6 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                 }
             }
             Object::Geometry { geometry } => {
-                let layer = layer_names
-                    .get(usize::from(geometry.header().layer_id))
-                    .filter(|name| !name.is_empty())
-                    .cloned();
-                // Text has a line type index too, but DXF text is not drawn with one.
-                let line_type = match geometry {
-                    Geometry::Text { .. } => None,
-                    _ => line_type_names
-                        .get(usize::from(geometry.header().line_type))
-                        .cloned()
-                        .flatten(),
-                };
-
-                let text_style = match geometry {
-                    Geometry::Text { font, .. } => {
-                        text_style_names.get(usize::from(font)).cloned().flatten()
-                    }
-                    _ => None,
-                };
-                let x_data = x_data(&geometry);
-
-                let color = geometry.header().color;
-
                 if let Geometry::Symbol {
                     position,
                     scale,
@@ -690,29 +817,18 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
                     }
                 }
 
-                for entity_type in entity_types(&mut drawing, geometry) {
-                    let mut entity = dxf::entities::Entity::new(entity_type);
-                    if let (dxf::entities::EntityType::Text(text), Some(text_style)) =
-                        (&mut entity.specific, &text_style)
-                    {
-                        text.text_style_name = text_style.clone();
+                match &mut block {
+                    Some(block) => {
+                        for entity in geometry_entities(&mut drawing, &names, geometry) {
+                            count(&entity);
+                            block.entities.push(entity);
+                        }
                     }
-                    entity.common.x_data.extend(x_data.clone());
-                    if let Some(layer) = &layer {
-                        entity.common.layer = layer.clone();
-                    }
-                    if let Some(line_type) = &line_type {
-                        entity.common.line_type_name = line_type.clone();
-                    }
-                    // Zero means the geometry takes the color of its layer, which is the DXF default.
-                    if color != 0 {
-                        entity.common.color = dxf::Color::from_index(color);
-                    }
-
-                    match &mut block {
-                        Some(block) => block.entities.push(entity),
-                        None => {
-                            drawing.add_entity(entity);
+                    None => {
+                        for entity in geometry_entities(&mut scratch, &names, geometry) {
+                            count(&entity);
+                            drawing.prepare_entity(&entity);
+                            reserved_handles += handles_needed(&entity);
                         }
                     }
                 }
@@ -723,8 +839,32 @@ pub fn objects_to_dxf(objects: Vec<Object>) -> dxf::Drawing {
 
     for (symbol, footprint) in symbol_footprints {
         let block = symbol_block(&mut drawing, symbol, footprint);
+        block.entities.iter().for_each(&mut count);
         drawing.add_block(block);
     }
+    contents.layers = drawing.layers().count();
+    contents.line_types = drawing.line_types().count();
+    contents.blocks = drawing.blocks().count();
 
-    drawing
+    // Second pass: the entities of the model space.
+    let mut stream = drawing.save_streaming(writer, reserved_handles)?;
+    let mut names = Names::default();
+    let mut in_block = false;
+    for item in ObjectReader::new(bytes)? {
+        let Ok(object) = item else { continue };
+        names.find(&drawing, &object);
+        match object {
+            Object::BlockBegin { .. } => in_block = true,
+            Object::BlockEnd => in_block = false,
+            Object::Geometry { geometry } if !in_block => {
+                for entity in geometry_entities(&mut scratch, &names, geometry) {
+                    stream.write_entity(entity)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    stream.finish()?;
+
+    Ok(contents)
 }

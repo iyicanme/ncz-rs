@@ -141,8 +141,9 @@ fn check_file(path: &Path) -> Record {
             return record;
         }
     };
-    let conversion = match nczrs::summary::convert(&bytes) {
-        Ok(conversion) => conversion,
+    let mut dxf = vec![];
+    let summary = match nczrs::summary::convert(&bytes, &mut dxf) {
+        Ok(summary) => summary,
         Err(error) => {
             record.status = error.to_string();
             return record;
@@ -150,14 +151,13 @@ fn check_file(path: &Path) -> Record {
     };
     drop(bytes);
 
-    let summary = conversion.summary;
     record.unreadable = summary.file.unreadable;
     record.geometries = to_strings(summary.file.geometries);
     record.entities = to_strings(summary.dxf.entities);
     record.skipped = to_strings(summary.dxf.skipped);
 
-    check_dxf_text(&conversion.dxf, &mut record.problems);
-    if let Err(error) = dxf::Drawing::load(&mut conversion.dxf.as_slice()) {
+    check_dxf_text(&dxf, &mut record.problems);
+    if let Err(error) = dxf::Drawing::load(&mut dxf.as_slice()) {
         record.problems.push(format!("does not load back: {error}"));
     }
     record

@@ -116,6 +116,7 @@ dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .button.secondary::before { content: "▸ "; }
 .button.secondary[aria-expanded="true"]::before { content: "▾ "; }
 .button:disabled { opacity: 0.6; cursor: progress; }
+.button[hidden] { display: none; }
 .button:hover { filter: brightness(1.1); }
 .button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
