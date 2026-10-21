@@ -1,4 +1,4 @@
-use crate::object::Object;
+use crate::object::{GEOMETRY_HEADER_LENGTH, Object};
 use bopper::{BigEndianReadBuffer, ReadBuffer};
 
 pub mod coordinate;
@@ -14,7 +14,7 @@ pub mod summary;
 mod wasm;
 
 #[cfg(feature = "dxf")]
-pub use dxf_export::objects_to_dxf;
+pub use dxf_export::write_dxf;
 
 /// Number of objects in a row that must decode before parsing resumes after a failure. Random bytes almost never
 /// pass, since each object needs a known type and a length that fits the file.
@@ -69,9 +69,26 @@ fn is_readable_at(bytes: &[u8], offset: usize) -> bool {
     let Some(rest) = bytes.get(offset..).filter(|rest| !rest.is_empty()) else {
         return false;
     };
-    // Cheap checks first, since most offsets fail them.
-    if !Object::is_known_type(rest[0]) {
-        return false;
+
+    // The headers alone first, since most offsets fail on them and decoding copies each body, which can be hundreds
+    // of megabytes for the length a garbage header declares.
+    let mut headers = BigEndianReadBuffer::new(rest);
+    for _ in 0..RESYNC_OBJECTS {
+        let (Some(id), Some(length)) = (headers.get_u8(), headers.get_u32()) else {
+            return false;
+        };
+        let Ok(length) = usize::try_from(length) else {
+            return false;
+        };
+        let body = headers.offset();
+        if !Object::is_known_type(id) || headers.skip(length).is_none() {
+            return false;
+        }
+        if Object::has_extra_geometry_header(id, rest.get(body + 1).copied())
+            && headers.skip(GEOMETRY_HEADER_LENGTH).is_none()
+        {
+            return false;
+        }
     }
 
     let mut buffer = BigEndianReadBuffer::new(rest);
@@ -90,36 +107,77 @@ fn resync(bytes: &[u8], offset: usize, length: Option<u32>) -> Option<usize> {
     (offset + 1..bytes.len()).find(|&candidate| is_readable_at(bytes, candidate))
 }
 
-pub fn parse_objects(bytes: &[u8]) -> Result<ParsedFile, ParseError> {
-    let mut buffer = BigEndianReadBuffer::new(bytes);
+/// Reads the objects of an NCZ file one at a time, so a whole file need not be held as objects. Each item is an
+/// object, or a failure after which reading resumes at the next readable object.
+pub struct ObjectReader<'a> {
+    bytes: &'a [u8],
+    buffer: BigEndianReadBuffer<'a>,
+    /// The file header, read by [`ObjectReader::new`] and yielded first.
+    header: Option<Object>,
+}
 
-    // Rejects files of zero bytes and other files that are not NCZ before they turn into a stream of garbage objects.
-    let Some(header @ Object::FileHeader { .. }) = Object::from_buffer(&mut buffer) else {
-        return Err(ParseError::NotNcz);
-    };
+impl<'a> ObjectReader<'a> {
+    /// Fails for files that do not start with a file header.
+    pub fn new(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        let mut buffer = BigEndianReadBuffer::new(bytes);
 
-    let mut objects = vec![header];
-    let mut failures = vec![];
-    while !buffer.is_empty() {
-        let offset = buffer.offset();
-        let Some(object) = read_object(&mut buffer) else {
-            let mut header = BigEndianReadBuffer::new(&bytes[offset..]);
-            let object_type_id = header.get_u8().unwrap_or_default();
-            let length = header.get_u32();
-            let next = resync(bytes, offset, length).unwrap_or(bytes.len());
-            failures.push(ParseFailure {
-                offset,
-                object_type_id,
-                length,
-                skipped: next - offset,
-            });
-
-            buffer = BigEndianReadBuffer::new(bytes);
-            buffer.skip(next).expect("parsing resumes inside the file");
-            continue;
+        // Rejects files of zero bytes and other files that are not NCZ before they turn into a stream of garbage
+        // objects.
+        let Some(header @ Object::FileHeader { .. }) = Object::from_buffer(&mut buffer) else {
+            return Err(ParseError::NotNcz);
         };
 
-        objects.push(object);
+        Ok(Self {
+            bytes,
+            buffer,
+            header: Some(header),
+        })
+    }
+}
+
+impl Iterator for ObjectReader<'_> {
+    type Item = Result<Object, ParseFailure>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(header) = self.header.take() {
+            return Some(Ok(header));
+        }
+        if self.buffer.is_empty() {
+            return None;
+        }
+
+        let offset = self.buffer.offset();
+        if let Some(object) = read_object(&mut self.buffer) {
+            return Some(Ok(object));
+        }
+
+        let bytes = self.bytes;
+        let mut header = BigEndianReadBuffer::new(&bytes[offset..]);
+        let object_type_id = header.get_u8().unwrap_or_default();
+        let length = header.get_u32();
+        let next = resync(bytes, offset, length).unwrap_or(bytes.len());
+
+        self.buffer = BigEndianReadBuffer::new(bytes);
+        self.buffer
+            .skip(next)
+            .expect("parsing resumes inside the file");
+        Some(Err(ParseFailure {
+            offset,
+            object_type_id,
+            length,
+            skipped: next - offset,
+        }))
+    }
+}
+
+pub fn parse_objects(bytes: &[u8]) -> Result<ParsedFile, ParseError> {
+    let mut objects = vec![];
+    let mut failures = vec![];
+    for item in ObjectReader::new(bytes)? {
+        match item {
+            Ok(object) => objects.push(object),
+            Err(failure) => failures.push(failure),
+        }
     }
 
     Ok(ParsedFile { objects, failures })

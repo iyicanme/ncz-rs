@@ -124,6 +124,10 @@ mod thumbnail;
 mod drawing;
 pub use crate::drawing::Drawing;
 
+// ncz-rs patch: writing entities without holding them.
+pub mod stream_writer;
+pub use crate::stream_writer::EntityStreamWriter;
+
 mod drawing_item;
 pub use crate::drawing_item::{DrawingItem, DrawingItemMut};
 

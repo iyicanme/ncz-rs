@@ -11,7 +11,13 @@ the entity NetCAD wrote for it and reports which NCZ fields predict which DXF gr
 After changing the parser or the DXF export, run `cargo run --release --bin corpus-check`. It converts every file in
 `ncz/`, checks the DXF output (handles, extended data, loading back) and compares the results with the baseline in
 `target/corpus-baseline.json`. `--update` accepts the new results. Files over 60 MB are left out unless `--all` is
-given, which needs `--jobs 1` on most machines (the largest file takes about 13 GB).
+given, which needs `--jobs 1` on most machines: the conversion streams, but the check holds each DXF and loads it back
+whole.
+
+The DXF export streams: a first pass over the file makes the tables and blocks, and a second one writes the
+entities of the model space as they are made, through a writer added to the vendored dxf crate. The largest file,
+`KARABUK_tüm-2012.NCZ` (704 MB), converts with a peak of about 850 MB in the CLI, most of it the file itself, and
+converts in the browser. It used to take 12.6 GB.
 
 Every geometry record is read to its last byte. A raw scan found no trailing bytes for any geometry type, so the
 remaining gaps are fields with unknown meaning, not unknown lengths.

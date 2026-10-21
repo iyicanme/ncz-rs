@@ -4,7 +4,7 @@ use crate::line_type::LineType;
 use crate::string::{get_string, get_string_with_padding};
 use bopper::{BigEndianReadBuffer, ReadBuffer};
 
-const GEOMETRY_HEADER_LENGTH: usize = 81;
+pub(crate) const GEOMETRY_HEADER_LENGTH: usize = 81;
 const LAYERS_HEADER_LENGTH: usize = 9;
 
 /// Bit of [`Layer::flags`] that is set when the layer is shown. NetCAD exports layers without it as off.
@@ -191,13 +191,18 @@ impl Object {
         matches!(id, 1..=6 | 8 | 10..=16 | 21..=23 | 25..=31 | 33 | 226)
     }
 
+    /// Image geometries declare a length that excludes the geometry header, which follows the declared body. Takes
+    /// the object type and the second byte of the body, the geometry type.
+    pub(crate) fn has_extra_geometry_header(object_type_id: u8, geometry_type: Option<u8>) -> bool {
+        object_type_id == 21 && geometry_type == Some(15)
+    }
+
     pub fn from_buffer(buffer: &mut impl ReadBuffer) -> Option<Self> {
         let object_type_id = buffer.get_u8()?;
         let object_length = buffer.get_u32()?.try_into().ok()?;
 
         let mut bytes = buffer.get_slice(object_length)?;
-        // Image geometries declare a length that excludes the geometry header.
-        if object_type_id == 21 && bytes.get(1) == Some(&15) {
+        if Self::has_extra_geometry_header(object_type_id, bytes.get(1).copied()) {
             bytes.extend(buffer.get_slice(GEOMETRY_HEADER_LENGTH)?);
         }
 
