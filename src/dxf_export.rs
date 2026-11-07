@@ -24,9 +24,13 @@ const CURVE_SEGMENTS_PER_SPAN: usize = 8;
 const ITALIC_OBLIQUE_ANGLE: f64 = 15.0;
 
 /// NCZ stores northing as x and easting as y, DXF puts easting on X. Angles are already in the east-north frame.
+///
+/// Values that are not finite become 0. Some files hold leftover memory in fields they do not use, such as the
+/// elevations of the polylines in `DOGANLAR_ITRF.NCZ`, and readers such as AutoCAD reject a DXF that contains `NaN`.
 impl From<Coordinate> for dxf::Point {
     fn from(value: Coordinate) -> Self {
-        dxf::Point::new(value.y, value.x, value.z)
+        let finite = |v: f64| if v.is_finite() { v } else { 0.0 };
+        dxf::Point::new(finite(value.y), finite(value.x), finite(value.z))
     }
 }
 

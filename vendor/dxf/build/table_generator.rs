@@ -209,7 +209,8 @@ fn generate_table_reader(fun: &mut String, element: &Element) {
         fun.push_str(
             "                                    2 => item.name = pair.assert_string()?,\n",
         );
-        fun.push_str("                                    5 => item.handle = pair.as_handle()?,\n");
+        // ncz-rs patch: DIMSTYLE records carry their handle in group 105.
+        fun.push_str("                                    5 | 105 => item.handle = pair.as_handle()?,\n");
         fun.push_str(
             "                                    extension_data::EXTENSION_DATA_GROUP => {\n",
         );
@@ -371,6 +372,14 @@ fn generate_table_writer(fun: &mut String, element: &Element) {
 
         fun.push_str("    pairs.push(CodePair::new_str(100, \"AcDbSymbolTable\"));\n");
         fun.push_str("    pairs.push(CodePair::new_i16(70, 0));\n");
+        // ncz-rs patch: the DIMSTYLE table has its own subclass marker, which AutoCAD expects.
+        let table_class_name = attr(table, "TableClassName");
+        if !table_class_name.is_empty() {
+            fun.push_str("    if drawing.header.version >= AcadVersion::R13 {\n");
+            fun.push_str(&format!("        pairs.push(CodePair::new_str(100, \"{table_class_name}\"));\n"));
+            fun.push_str("        pairs.push(CodePair::new_i16(71, 0));\n");
+            fun.push_str("    }\n");
+        }
         fun.push_str(&format!(
             "    for item in drawing.{collection}() {{\n",
             collection = attr(table, "Collection")
@@ -380,7 +389,9 @@ fn generate_table_writer(fun: &mut String, element: &Element) {
             type_string = attr(table, "TypeString")
         ));
         fun.push_str("        if write_handles {\n");
-        fun.push_str(&format!("            pairs.push(CodePair::new_string(5, &DrawingItem::{item_type}(item).handle().as_string()));\n"));
+        // ncz-rs patch: DIMSTYLE records carry their handle in group 105, not 5. AutoCAD rejects them otherwise.
+        let handle_code = if attr(table, "TypeString") == "DIMSTYLE" { 105 } else { 5 };
+        fun.push_str(&format!("            pairs.push(CodePair::new_string({handle_code}, &DrawingItem::{item_type}(item).handle().as_string()));\n"));
         fun.push_str("        }\n");
         fun.push('\n');
         fun.push_str("        if drawing.header.version >= AcadVersion::R14 {\n");

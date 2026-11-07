@@ -20,6 +20,9 @@ top-level `Cargo.toml`. Changes are marked with `ncz-rs patch` comments:
   table) and `$HANDSEED` is written past them. The tests `write_proper_handseed_on_new_file` and
   `write_proper_handseed_on_read_file` expect the moved seed, and `write_unique_handles_including_tables` checks that
   every handle is set, unique and below the seed. It fails on the unpatched release.
+- `build/table_generator.rs`: `DIMSTYLE` records write their handle in group 105, as the DXF reference requires, and
+  are read from 105 as well as 5. With group 5, AutoCAD stopped loading at the first `DIMSTYLE` record. The
+  `DIMSTYLE` table also writes its subclass marker `AcDbDimStyleTable` and group 71 from R13 on.
 
 - `src/stream_writer.rs` (new): `Drawing::save_streaming` writes a drawing up to its entities and returns an
   `EntityStreamWriter`, which writes further entities one at a time, giving them handles from a range set aside in

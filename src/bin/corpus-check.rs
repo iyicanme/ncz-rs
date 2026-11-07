@@ -88,8 +88,23 @@ fn check_dxf_text(dxf: &[u8], problems: &mut Vec<String>) {
     let mut handles = vec![];
     let mut entity = "";
     let mut x_data_after_seqend = 0;
+    let mut not_finite = 0;
+    let mut dim_style_code_5 = 0;
     for (index, &(code, value)) in pairs.iter().enumerate() {
+        if let Ok(number) = code.parse::<u16>()
+            && matches!(number, 10..=59 | 110..=149 | 210..=239 | 460..=469 | 1010..=1059)
+            && value.parse::<f64>().is_ok_and(|v| !v.is_finite())
+        {
+            not_finite += 1;
+        }
         match code {
+            // AutoCAD expects the handle of a DIMSTYLE record in group 105.
+            "5" if entity == "DIMSTYLE" && index > 0 && pairs[index - 1] == ("0", "DIMSTYLE") => {
+                dim_style_code_5 += 1;
+                if let Ok(handle) = u64::from_str_radix(value, 16) {
+                    handles.push(handle);
+                }
+            }
             "0" => entity = value,
             "5" | "105" if index > 0 && pairs[index - 1] == ("9", "$HANDSEED") => {
                 seed = u64::from_str_radix(value, 16).ok();
@@ -115,6 +130,8 @@ fn check_dxf_text(dxf: &[u8], problems: &mut Vec<String>) {
         (not_below_seed, "handles are not below $HANDSEED"),
         (handles.len() - unique, "handles are repeated"),
         (x_data_after_seqend, "SEQENDs have extended data"),
+        (not_finite, "numbers are not finite"),
+        (dim_style_code_5, "DIMSTYLE records have their handle in group 5, not 105"),
     ] {
         if count > 0 {
             problems.push(format!("{count} {what}"));
