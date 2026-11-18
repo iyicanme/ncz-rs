@@ -1,11 +1,11 @@
 use crate::coordinate::Coordinate;
 use crate::geometry::{Geometry, Header, POLYLINE_CLOSED, POLYLINE_CURVE, POLYLINE_SMOOTH_CURVE};
 use crate::line_type::LineType;
-use crate::object::{LAYER_VISIBLE, Object};
+use crate::object::{LAYER_POINT_MARKERS, LAYER_VISIBLE, Object};
 use crate::symbols::{self, Shape};
 use crate::{ObjectReader, ParseFailure};
 use dxf::stream_writer::handles_needed;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 /// Segment values at or above this refer to symbols rather than lengths.
@@ -581,6 +581,85 @@ fn line_pattern_entities(
     entities
 }
 
+/// The marker NetCAD draws at a point, besides the point itself. Measured on NetCAD 5's DXF export of the four sample
+/// drawings, which all have map scale 1, so how the markers follow the map scale is assumed, as for line patterns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum PointMarker {
+    /// A circle with a dot, at every point of a layer with [`LAYER_POINT_MARKERS`].
+    Circle,
+    /// A larger circle, at traverse points (named `P.…`) of other layers.
+    Traverse,
+    /// A triangle with a cross, at triangulation points (named `N.…`) of other layers.
+    Triangulation,
+}
+
+impl PointMarker {
+    /// The marker of a point with the name on a layer that has, or has not, [`LAYER_POINT_MARKERS`]. Other points
+    /// get none. The layer decides first: traverse point `P.35` on such a layer gets the circle with a dot.
+    fn of(name: &str, marked_layer: bool) -> Option<Self> {
+        if marked_layer {
+            Some(Self::Circle)
+        } else if name.starts_with("P.") {
+            Some(Self::Traverse)
+        } else if name.starts_with("N.") {
+            Some(Self::Triangulation)
+        } else {
+            None
+        }
+    }
+
+    fn block_name(self) -> &'static str {
+        match self {
+            Self::Circle => "NCZ_POINT",
+            Self::Traverse => "NCZ_POINT_TRAVERSE",
+            Self::Triangulation => "NCZ_POINT_TRIANGULATION",
+        }
+    }
+
+    /// The shapes for map scale 1, around the point. The dot is a short diagonal line, as NetCAD draws it.
+    fn shapes(self) -> &'static [Shape] {
+        const fn line(x1: f64, y1: f64, x2: f64, y2: f64) -> Shape {
+            Shape::Line {
+                start: (x1, y1),
+                end: (x2, y2),
+            }
+        }
+        const fn circle(radius: f64) -> Shape {
+            Shape::Circle {
+                center: (0.0, 0.0),
+                radius,
+            }
+        }
+        const CIRCLE: &[Shape] = &[circle(0.65), line(-0.041, -0.041, 0.041, 0.041)];
+        const TRAVERSE: &[Shape] = &[circle(1.2)];
+        const TRIANGULATION: &[Shape] = &[
+            line(0.0, 2.0, -1.75, -1.0),
+            line(-1.75, -1.0, 1.75, -1.0),
+            line(1.75, -1.0, 0.0, 2.0),
+            line(-0.125, -0.125, 0.125, 0.125),
+            line(-0.125, 0.125, 0.125, -0.125),
+        ];
+        match self {
+            Self::Circle => CIRCLE,
+            Self::Traverse => TRAVERSE,
+            Self::Triangulation => TRIANGULATION,
+        }
+    }
+}
+
+/// The marker of a point geometry, see [`PointMarker`].
+fn point_marker(names: &Names, geometry: &Geometry) -> Option<PointMarker> {
+    let Geometry::Point { header, name, .. } = geometry else {
+        return None;
+    };
+    let marked_layer = names
+        .point_markers
+        .get(usize::from(header.layer_id))
+        .copied()
+        .unwrap_or(false);
+    PointMarker::of(name, marked_layer)
+}
+
 /// Converts a font file name to a text style. The style is named after the file stem, e.g. `ARIAL` for
 /// `ARIAL.NCF`, and is assumed to use the TrueType font of the same name.
 fn text_style(font: &str) -> Option<dxf::tables::Style> {
@@ -831,6 +910,8 @@ struct Names {
     line_patterns: Vec<Option<LinePattern>>,
     /// The map scale, which scales line type patterns.
     scale: Option<f64>,
+    /// Whether NetCAD draws a marker at the points of the layer, by layer index, see [`LAYER_POINT_MARKERS`].
+    point_markers: Vec<bool>,
 }
 
 /// The line type of the drawing with the name, ignoring case as DXF does.
@@ -892,6 +973,8 @@ impl Names {
                         });
                     }
                     self.layers.push(layer.name.clone());
+                    self.point_markers
+                        .push(layer.flags & LAYER_POINT_MARKERS != 0);
                 }
             }
             Object::LineTypes { types } => {
@@ -934,6 +1017,11 @@ impl Names {
             Object::Layers { layers, .. } => {
                 self.layers
                     .extend(layers.iter().map(|layer| layer.name.clone()));
+                self.point_markers.extend(
+                    layers
+                        .iter()
+                        .map(|layer| layer.flags & LAYER_POINT_MARKERS != 0),
+                );
             }
             Object::LineTypes { types } => {
                 self.line_types.extend(types.iter().map(|line_type| {
@@ -983,12 +1071,29 @@ fn geometry_entities(
     };
     let x_data = x_data(&geometry);
     let color = geometry.header().color;
-    let pattern = match geometry {
+    let mut extras = match geometry {
         Geometry::Line { begin, end, .. } => {
             line_pattern_entities(names, usize::from(geometry.header().line_type), begin, end)
         }
         _ => vec![],
     };
+    if let (Some(marker), Geometry::Point { position, .. }) =
+        (point_marker(names, &geometry), &geometry)
+    {
+        let scale = names.pattern_scale();
+        let insert = dxf::entities::Insert {
+            name: marker.block_name().to_owned(),
+            location: (*position).into(),
+            x_scale_factor: scale,
+            y_scale_factor: scale,
+            ..Default::default()
+        };
+        // Markers are drawn solid.
+        extras.push((
+            dxf::entities::EntityType::Insert(insert),
+            Some("CONTINUOUS".to_owned()),
+        ));
+    }
     let common = |mut entity: dxf::entities::Entity| {
         if let Some(layer) = &layer {
             entity.common.layer = layer.clone();
@@ -1017,7 +1122,7 @@ fn geometry_entities(
         })
         .collect();
 
-    entities.extend(pattern.into_iter().map(|(entity_type, line_type)| {
+    entities.extend(extras.into_iter().map(|(entity_type, line_type)| {
         let mut entity = dxf::entities::Entity::new(entity_type);
         if let Some(line_type) = line_type {
             entity.common.line_type_name = line_type;
@@ -1136,6 +1241,7 @@ pub fn write_dxf(
     // a right angle.
     let mut symbols_in_use: BTreeMap<String, (Option<String>, u16, Option<SymbolFootprint>)> =
         BTreeMap::new();
+    let mut point_markers: BTreeSet<PointMarker> = BTreeSet::new();
     let mut reserved_handles = 0;
     let mut bounds = Bounds::default();
     for item in ObjectReader::new(bytes)? {
@@ -1196,6 +1302,8 @@ pub fn write_dxf(
                     }
                 }
 
+                point_markers.extend(point_marker(&names, &geometry));
+
                 if let Geometry::Line { header, .. } = &geometry
                     && let Some(library) = names.library(0)
                 {
@@ -1241,6 +1349,11 @@ pub fn write_dxf(
         drawing.header.maximum_drawing_extents = max;
     }
 
+    for marker in point_markers {
+        let block = symbol_shape_block(marker.block_name().to_owned(), marker.shapes());
+        block.entities.iter().for_each(&mut count);
+        drawing.add_block(block);
+    }
     for (name, (library, symbol, footprint)) in symbols_in_use {
         let shapes = library.and_then(|library| symbols::find(&library, symbol));
         let block = match shapes {
@@ -1292,6 +1405,20 @@ mod tests {
             segments: segments.to_vec(),
             unknown2: vec![],
         }
+    }
+
+    #[test]
+    fn picks_point_markers() {
+        // As NetCAD 5 drew them in the sample drawings.
+        assert_eq!(PointMarker::of("118/1", true), Some(PointMarker::Circle));
+        assert_eq!(PointMarker::of("P.35", true), Some(PointMarker::Circle));
+        assert_eq!(PointMarker::of("P.20", false), Some(PointMarker::Traverse));
+        assert_eq!(
+            PointMarker::of("N.F2930203", false),
+            Some(PointMarker::Triangulation)
+        );
+        assert_eq!(PointMarker::of("118/535", false), None);
+        assert_eq!(PointMarker::of("", false), None);
     }
 
     #[test]
