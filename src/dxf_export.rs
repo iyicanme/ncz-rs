@@ -1027,6 +1027,72 @@ fn geometry_entities(
     entities
 }
 
+/// The box around the entities of the model space, for the `$EXTMIN` and `$EXTMAX` header values. The extents an NCZ
+/// file stores are often stale: in 3 of the 6 sample files they cover only part of the drawing, so viewers that zoom
+/// to the header extents showed little or nothing.
+///
+/// The box is 2D, as NetCAD writes it. Elevations are left out since some polylines store garbage there (values up
+/// to 1e37 in `ALINCA_ITRF`, which NetCAD exports too), and a box that tall would make a zoom to the extents show
+/// nothing.
+#[derive(Debug, Default, PartialEq)]
+struct Bounds(Option<(dxf::Point, dxf::Point)>);
+
+impl Bounds {
+    fn add(&mut self, point: &dxf::Point) {
+        if !(point.x.is_finite() && point.y.is_finite()) {
+            return;
+        }
+        let point = dxf::Point::new(point.x, point.y, 0.0);
+        let (min, max) = self.0.get_or_insert_with(|| (point.clone(), point.clone()));
+        min.x = min.x.min(point.x);
+        min.y = min.y.min(point.y);
+        max.x = max.x.max(point.x);
+        max.y = max.y.max(point.y);
+    }
+
+    /// Adds a circle as its bounding square, which also holds any arc of it.
+    fn add_circle(&mut self, center: &dxf::Point, radius: f64) {
+        let radius = radius.abs();
+        for (dx, dy) in [(-radius, -radius), (radius, radius)] {
+            self.add(&dxf::Point::new(center.x + dx, center.y + dy, center.z));
+        }
+    }
+
+    /// Adds the points that define an entity. Texts and inserts count with their insertion point only, so the box can
+    /// miss the far side of a text or of a block's shape.
+    fn add_entity(&mut self, entity: &dxf::entities::Entity) {
+        use dxf::entities::EntityType;
+
+        match &entity.specific {
+            EntityType::Arc(arc) => self.add_circle(&arc.center, arc.radius),
+            EntityType::Circle(circle) => self.add_circle(&circle.center, circle.radius),
+            EntityType::Face3D(face) => {
+                for point in [
+                    &face.first_corner,
+                    &face.second_corner,
+                    &face.third_corner,
+                    &face.fourth_corner,
+                ] {
+                    self.add(point);
+                }
+            }
+            EntityType::Insert(insert) => self.add(&insert.location),
+            EntityType::Line(line) => {
+                self.add(&line.p1);
+                self.add(&line.p2);
+            }
+            EntityType::ModelPoint(point) => self.add(&point.location),
+            EntityType::Polyline(polyline) => {
+                for vertex in polyline.vertices() {
+                    self.add(&vertex.location);
+                }
+            }
+            EntityType::Text(text) => self.add(&text.location),
+            _ => {}
+        }
+    }
+}
+
 /// What the DXF output holds, for the summary.
 #[derive(Debug, Default)]
 pub struct DxfContents {
@@ -1071,6 +1137,7 @@ pub fn write_dxf(
     let mut symbols_in_use: BTreeMap<String, (Option<String>, u16, Option<SymbolFootprint>)> =
         BTreeMap::new();
     let mut reserved_handles = 0;
+    let mut bounds = Bounds::default();
     for item in ObjectReader::new(bytes)? {
         inspect(&item);
         let Ok(object) = item else { continue };
@@ -1080,6 +1147,7 @@ pub fn write_dxf(
                 lower_bound,
                 upper_bound,
             } => {
+                // Only used when the model space is empty, see `Bounds`.
                 drawing.header.minimum_drawing_extents = lower_bound.into();
                 drawing.header.maximum_drawing_extents = upper_bound.into();
             }
@@ -1154,6 +1222,7 @@ pub fn write_dxf(
                     None => {
                         for entity in geometry_entities(&mut scratch, &names, geometry) {
                             count(&entity);
+                            bounds.add_entity(&entity);
                             drawing.prepare_entity(&entity);
                             reserved_handles += handles_needed(&entity);
                         }
@@ -1162,6 +1231,14 @@ pub fn write_dxf(
             }
             _ => {}
         }
+    }
+
+    if let Bounds(Some((min, max))) = bounds {
+        // NetCAD writes the bounds of its entities as the limits too, which are 2D.
+        drawing.header.minimum_drawing_limits = min.clone();
+        drawing.header.maximum_drawing_limits = max.clone();
+        drawing.header.minimum_drawing_extents = min;
+        drawing.header.maximum_drawing_extents = max;
     }
 
     for (name, (library, symbol, footprint)) in symbols_in_use {
@@ -1215,6 +1292,30 @@ mod tests {
             segments: segments.to_vec(),
             unknown2: vec![],
         }
+    }
+
+    #[test]
+    fn bounds_cover_entities() {
+        use dxf::entities::{Circle, Entity, EntityType, Line};
+        use dxf::Point;
+
+        let mut bounds = Bounds::default();
+        bounds.add_entity(&Entity::new(EntityType::Line(Line::new(
+            Point::new(10.0, 20.0, 0.0),
+            Point::new(30.0, 5.0, 2.0),
+        ))));
+        bounds.add_entity(&Entity::new(EntityType::Circle(Circle::new(
+            Point::new(0.0, 0.0, 0.0),
+            1.5,
+        ))));
+        bounds.add(&Point::new(f64::NAN, 100.0, 0.0));
+        assert_eq!(
+            bounds,
+            Bounds(Some((
+                Point::new(-1.5, -1.5, 0.0),
+                Point::new(30.0, 20.0, 0.0)
+            )))
+        );
     }
 
     #[test]
