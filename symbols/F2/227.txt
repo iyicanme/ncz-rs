@@ -1,0 +1,6 @@
+# Symbol 227 of F2.NCS
+circle 0 0 0.25
+line 0 0.25 0 1.5
+line 0 1.5 0 1.75
+line 0 1.75 0 2.25
+line -0.25 1.75 0.25 2

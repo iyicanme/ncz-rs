@@ -1,0 +1,5 @@
+# Symbol 235 of F2.NCS
+circle 0 4.5 1.5
+line 0 3 0 0
+line -1 5.5 1 3.5
+line 1 5.5 -1 3.5

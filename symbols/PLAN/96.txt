@@ -1,0 +1,4 @@
+# Symbol 96 of PLAN.NCS
+line -1 0 1 0
+line 1 0 1 1.5
+line 0.666667 0 0.666667 1.5

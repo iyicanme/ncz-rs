@@ -1,0 +1,5 @@
+# Symbol 168 of F2.NCS
+line -2 2 -2 -2
+line -2 -2 2 -2
+line 2 -2 2 2
+line 2 2 -2 2

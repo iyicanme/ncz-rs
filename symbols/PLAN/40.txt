@@ -1,0 +1,3 @@
+# Symbol 40 of PLAN.NCS
+line -1.25 3.375 1.25 3.375
+line 0 0 0 4

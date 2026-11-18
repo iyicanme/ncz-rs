@@ -1,0 +1,2 @@
+# Symbol 161 of PLAN.NCS
+circle 0 0 2.5

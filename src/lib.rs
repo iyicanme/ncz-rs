@@ -10,6 +10,7 @@ pub mod object;
 pub mod string;
 #[cfg(feature = "dxf")]
 pub mod summary;
+pub mod symbols;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 

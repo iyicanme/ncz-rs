@@ -1,0 +1,7 @@
+# Symbol 187 of F2.NCS
+line 0 0 0 2
+line 0 2 -1.25 2
+line -1.75 2 -3 2
+line -3 2 -3 0
+line -3 0 0 0
+line 0 0 2 -2

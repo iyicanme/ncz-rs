@@ -1,0 +1,17 @@
+# Symbol 180 of PLAN.NCS
+circle 0 0 0.5
+circle 0 0 0.46875
+circle 0 0 0.4375
+circle 0 0 0.40625
+circle 0 0 0.375
+circle 0 0 0.34375
+circle 0 0 0.28125
+circle 0 0 0.3125
+circle 0 0 0.25
+circle 0 0 0.1875
+circle 0 0 0.21875
+circle 0 0 0.125
+circle 0 0 0.15625
+circle 0 0 0.09375
+circle 0 0 0.0625
+circle 0 0 0.03125

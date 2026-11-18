@@ -1,0 +1,8 @@
+# Symbol 160 of F2.NCS
+circle 0 0 1.5
+line 0 1.5 2 4.5
+line 2 4.5 0 4.5
+line 0 4.5 2 7.5
+line 1.5 8 2.5 7
+line 2.5 7 3 8.5
+line 3 8.5 1.5 8

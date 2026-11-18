@@ -1,0 +1,5 @@
+# Symbol 249 of PLAN.NCS
+circle -1.25 0 1.25
+circle -1.25 0 0.833333
+circle -1.25 0 0.416667
+circle 1.25 0 1.25

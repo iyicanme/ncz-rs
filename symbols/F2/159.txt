@@ -1,0 +1,13 @@
+# Symbol 159 of F2.NCS
+line -2 -2 2 -2
+line 2 -2 2 2
+line 2 2 -2 2
+line -2 2 -2 -2
+line -2 -2 2 2
+line -2 2 2 -2
+line 0 2 2 4.5
+line 2 4.5 0 4.5
+line 0 4.5 2.5 7
+line 2 7.5 3 6.5
+line 3 6.5 3.5 8
+line 3.5 8 2 7.5

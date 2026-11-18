@@ -1,0 +1,6 @@
+# Symbol 240 of F2.NCS
+line -2.5 0 -0.625 0
+line 0 0 0 0
+line 0.625 0 2.5 0
+line 0 2.5 0 0.625
+line 0 -0.625 0 -2.5

@@ -1,0 +1,4 @@
+# Symbol 216 of PLAN.NCS
+circle 0 0 0.333333
+circle 0 0 0.666667
+circle 0 0 1

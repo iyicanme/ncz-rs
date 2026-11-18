@@ -1,0 +1,2 @@
+# Symbol 93 of PLAN.NCS
+line 0 1 0 -1

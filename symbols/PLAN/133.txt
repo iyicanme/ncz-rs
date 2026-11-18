@@ -1,0 +1,2 @@
+# Symbol 133 of PLAN.NCS
+line -2.461539 0 2.461539 0

@@ -1,0 +1,4 @@
+# Symbol 95 of F2.NCS
+line 0 0 6 0
+line 6 0 6 -4.5
+line 5 0 5 -4.5

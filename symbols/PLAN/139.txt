@@ -1,0 +1,2 @@
+# Symbol 139 of PLAN.NCS
+line -1 0.5625 1 0.5625

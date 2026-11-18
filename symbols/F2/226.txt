@@ -1,0 +1,7 @@
+# Symbol 226 of F2.NCS
+line 0 2 4 2
+line 4 2 4 0
+line 4 0 0 0
+line 0 0 0 2
+line 0 2 -0.5 2.5
+line -1 3 -2 4

@@ -1,0 +1,2 @@
+# Symbol 93 of F2.NCS
+line 0 0.5 0 -0.5

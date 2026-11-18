@@ -1,0 +1,4 @@
+# Symbol 220 of F2.NCS
+circle 0 0 3.5
+circle 0 0 2.1875
+circle 0 0 0.21875

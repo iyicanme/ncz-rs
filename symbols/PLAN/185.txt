@@ -1,0 +1,4 @@
+# Symbol 185 of PLAN.NCS
+circle 0 0 1
+line 0 1.5 0 -1.5
+line -1.5 0 1.5 0

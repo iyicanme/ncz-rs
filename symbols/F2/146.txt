@@ -1,0 +1,2 @@
+# Symbol 146 of F2.NCS
+line 0 0 0 -1.476748

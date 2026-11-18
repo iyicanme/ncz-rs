@@ -1,0 +1,8 @@
+# Symbol 120 of F2.NCS
+line 0 3 0 -3
+line 0 -3 2 -3
+line 0 3 2 3
+line 2 3.5 2 2.5
+line 2 -2.5 2 -3.5
+line 0 0 -1 0
+line -1 0 -1 -6

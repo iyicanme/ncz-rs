@@ -1,0 +1,22 @@
+# Symbol 218 of F2.NCS
+line -3.2 0 -2.4 0
+line 2 0 2.8 0
+line 0 -6 0.8 -6
+line -3.2 0 -3.2 2
+line 0 -6 0 -4
+line 2 0 2 2
+circle -3.2 2.4 0.4
+circle 2 2.4 0.4
+circle 0 -3.6 0.4
+line -2 0 -1.6 0
+line 3.2 0 3.6 0
+line 1.2 -6 1.6 -6
+circle -2.8 1.6 0.4
+circle 2.4 1.6 0.4
+circle 0.4 -4.4 0.4
+line 2.4 1.2 2 0.8
+line 2 0.8 1.6 0.8
+line -2.8 1.2 -3.2 0.8
+line -3.2 0.8 -3.6 0.8
+line 0.4 -4.8 0 -5.2
+line 0 -5.2 -0.4 -5.2

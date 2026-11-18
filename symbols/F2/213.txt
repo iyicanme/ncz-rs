@@ -1,0 +1,7 @@
+# Symbol 213 of F2.NCS
+line 1 1 -1 -1
+line -1 1 1 -1
+line -1 -1 -1 1
+line 1 -1 -1 -1
+line 1 1 1 -1
+line -1 1 1 1

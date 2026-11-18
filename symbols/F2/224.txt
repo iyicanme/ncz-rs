@@ -1,0 +1,5 @@
+# Symbol 224 of F2.NCS
+line 0 1.2 0 0
+line 0 0 0.266667 0
+line 0.533333 0 0.8 0
+circle 0 1.6 0.4

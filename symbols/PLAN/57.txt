@@ -1,0 +1,4 @@
+# Symbol 57 of PLAN.NCS
+line -2.40625 7 2.625 7
+line 2.625 7 0 0
+line 0 0 -2.40625 7

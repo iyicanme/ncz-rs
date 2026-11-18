@@ -1,0 +1,7 @@
+# Symbol 85 of PLAN.NCS
+line -1 1 1 1
+line 1 -0.857143 1 -0.857143
+line 1 -1 -1 -1
+line -0.857143 1 -0.857143 1
+line 1 1 1 -1
+line -1 1 -1 -1

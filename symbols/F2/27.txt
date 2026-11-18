@@ -1,0 +1,14 @@
+# Symbol 27 of F2.NCS
+line 0 2 -2 2
+line -2 2 -2 -2
+line -2 -2 2 -2
+line 2 -2 2 2
+line 2 2 0 2
+line 0 2 0 5
+line 0 5 -1.5 7
+line -1.5 7 1.5 9
+line 1.5 9 0 11
+line -0.5 12 0.5 12
+line 0.5 12 0 13
+line 0 13 -0.5 12
+line 0 11 0 12

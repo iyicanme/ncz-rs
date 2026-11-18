@@ -1,0 +1,7 @@
+# Symbol 175 of PLAN.NCS
+circle 0 0 0.166667
+circle 0 0 0.333333
+circle 0 0 0.5
+circle 0 0 0.666667
+circle 0 0 0.833333
+circle 0 0 1

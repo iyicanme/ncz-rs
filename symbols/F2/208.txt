@@ -1,0 +1,2 @@
+# Symbol 208 of F2.NCS
+circle 0 0 0.5

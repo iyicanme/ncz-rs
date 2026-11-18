@@ -2,6 +2,7 @@ use crate::coordinate::Coordinate;
 use crate::geometry::{Geometry, Header, POLYLINE_CLOSED, POLYLINE_CURVE, POLYLINE_SMOOTH_CURVE};
 use crate::line_type::LineType;
 use crate::object::{LAYER_VISIBLE, Object};
+use crate::symbols::{self, Shape};
 use crate::{ObjectReader, ParseFailure};
 use dxf::stream_writer::handles_needed;
 use std::collections::BTreeMap;
@@ -13,8 +14,9 @@ const SYMBOL_SEGMENT: f32 = 1000.0;
 /// Application name of the extended data that holds point names and feature codes.
 const APP_ID: &str = "NCZ";
 
-/// Prefix of the blocks that stand in for symbols. The shapes are in NetCAD's symbol libraries (`.NCS`), which are
-/// not part of the NCZ file, so each block holds only the symbol's footprint and can be redefined with the real shape.
+/// Prefix of the blocks that draw symbols. The shapes are not part of the NCZ file. Symbols whose shape is embedded
+/// (see `symbols/README.md`) are drawn with it, the others with their footprint, and those blocks can be redefined
+/// with the real shape.
 const SYMBOL_BLOCK_PREFIX: &str = "NCZ_SYMBOL_";
 
 /// Straight segments that draw each span of a curved polyline.
@@ -197,8 +199,12 @@ fn rotated_rectangle(
     polyline(drawing, points, true)
 }
 
-fn symbol_block_name(symbol: u16) -> String {
-    format!("{SYMBOL_BLOCK_PREFIX}{symbol}")
+/// The block of a symbol, e.g. `NCZ_SYMBOL_F2_126`, or `NCZ_SYMBOL_126` when its library is not known.
+fn symbol_block_name(library: Option<&str>, symbol: u16) -> String {
+    match library {
+        Some(library) => format!("{SYMBOL_BLOCK_PREFIX}{library}_{symbol}"),
+        None => format!("{SYMBOL_BLOCK_PREFIX}{symbol}"),
+    }
 }
 
 /// The extent of a symbol in its own frame, before scaling and rotation, relative to its insertion point. In DXF
@@ -257,11 +263,43 @@ fn symbol_footprint(
     })
 }
 
-/// A block that stands in for a symbol: its footprint, or a unit square around the insertion point when no
-/// instance has usable bounds. It is drawn by block, so it takes the layer, color and line type of each insert.
-fn symbol_block(
+/// Draws the entity by block, so it takes the layer, color and line type of each insert.
+fn by_block(mut entity: dxf::entities::Entity) -> dxf::entities::Entity {
+    entity.common.color = dxf::Color::by_block();
+    entity.common.line_type_name = "BYBLOCK".to_owned();
+    entity
+}
+
+/// A block that draws a symbol with its shape, drawn by block.
+fn symbol_shape_block(name: String, shapes: &[Shape]) -> dxf::Block {
+    let point = |(x, y): (f64, f64)| dxf::Point::new(x, y, 0.0);
+    let entities = shapes
+        .iter()
+        .map(|&shape| {
+            let specific = match shape {
+                Shape::Line { start, end } => dxf::entities::EntityType::Line(
+                    dxf::entities::Line::new(point(start), point(end)),
+                ),
+                Shape::Circle { center, radius } => dxf::entities::EntityType::Circle(
+                    dxf::entities::Circle::new(point(center), radius),
+                ),
+            };
+            by_block(dxf::entities::Entity::new(specific))
+        })
+        .collect();
+
+    dxf::Block {
+        name,
+        entities,
+        ..Default::default()
+    }
+}
+
+/// A block that stands in for a symbol whose shape is not known: its footprint, or a unit square around the insertion
+/// point when no instance has usable bounds. It is drawn by block.
+fn symbol_footprint_block(
     drawing: &mut dxf::Drawing,
-    symbol: u16,
+    name: String,
     footprint: Option<SymbolFootprint>,
 ) -> dxf::Block {
     let (min, max) = footprint
@@ -271,12 +309,14 @@ fn symbol_block(
     // `rectangle` takes NCZ coordinates, which have the axes the other way round.
     let corner = |(x, y)| Coordinate { x: y, y: x, z: 0.0 };
 
-    let mut entity = dxf::entities::Entity::new(rectangle(drawing, corner(min), corner(max)));
-    entity.common.color = dxf::Color::by_block();
-    entity.common.line_type_name = "BYBLOCK".to_owned();
+    let entity = by_block(dxf::entities::Entity::new(rectangle(
+        drawing,
+        corner(min),
+        corner(max),
+    )));
 
     dxf::Block {
-        name: symbol_block_name(symbol),
+        name,
         entities: vec![entity],
         ..Default::default()
     }
@@ -342,6 +382,203 @@ fn dxf_line_type(line_type: &LineType) -> Option<dxf::tables::LineType> {
         dash_dot_space_lengths: segments,
         ..Default::default()
     })
+}
+
+/// Symbol values of a line type pattern: `1000 + n` puts symbol `n` of the first library at the current place, turned
+/// along the line, and `-(1000 + n)` puts it turned by a further half turn. Symbols take no length. Other thousands
+/// digits (`-2128`, `-4128`, `-3180`, …) occur in the corpus but no NetCAD export shows their meaning, so those
+/// symbols are left out.
+const PATTERN_SYMBOLS: std::ops::Range<f64> = 1000.0..1256.0;
+
+/// Repeats of a pattern along a single line beyond which its symbols are left out, so that a pattern of tiny lengths
+/// on a long line cannot flood the drawing.
+const MAX_PATTERN_REPEATS: f64 = 10_000.0;
+
+/// Line types in a chain of parallel lines beyond which the chain is cut, which also ends chains that loop.
+const MAX_CHAIN: usize = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PatternElement {
+    /// A dash or a gap, as a length.
+    Length(f64),
+    Symbol {
+        number: u16,
+        turned: bool,
+    },
+}
+
+/// What a line type draws along a line besides its dashes, which the DXF line type draws: symbols, and a further line
+/// type drawn parallel to it. NetCAD 5 draws both along lines only, not along polylines or arcs, and so does the DXF
+/// export.
+#[derive(Clone, Debug, PartialEq)]
+struct LinePattern {
+    elements: Vec<PatternElement>,
+    /// The length of one repeat of the pattern, in pattern units.
+    length: f64,
+    /// A line type with a negative segment count also draws the line type `unknown1`, at `offset` to the right of it,
+    /// which can chain on in turn. This matches every line of NetCAD's export of `DUVAR-1` (4 parallel lines), `DUV3`
+    /// and `ISTINAT` in the sample pairs. A chain ends at a line type with a positive count, often `DUZ`.
+    parallel: Option<(f64, usize)>,
+}
+
+impl LinePattern {
+    /// The symbols and parallel line type of a line type, `None` when it has neither. Symbols are only kept when the
+    /// pattern has a length, otherwise they would all be at the start.
+    fn new(line_type: &LineType) -> Option<Self> {
+        let mut elements = vec![];
+        for &segment in &line_type.segments {
+            let value = f64::from(segment);
+            if !value.is_finite() {
+                return None;
+            }
+            if value.abs() < f64::from(SYMBOL_SEGMENT) {
+                elements.push(PatternElement::Length(value.abs()));
+            } else if value.fract() == 0.0 && PATTERN_SYMBOLS.contains(&value.abs()) {
+                elements.push(PatternElement::Symbol {
+                    number: (value.abs() - PATTERN_SYMBOLS.start) as u16,
+                    turned: value < 0.0,
+                });
+            }
+        }
+        let length: f64 = elements
+            .iter()
+            .map(|element| match element {
+                PatternElement::Length(length) => *length,
+                PatternElement::Symbol { .. } => 0.0,
+            })
+            .sum();
+        if length <= 0.0 {
+            elements.clear();
+        }
+        // Unused slots hold leftover memory, so huge offsets are not taken.
+        let offset = f64::from(line_type.offset);
+        let parallel = (line_type.segment_count < 0 && offset.is_finite() && offset.abs() < 1e3)
+            .then_some((offset, usize::from(line_type.unknown1)));
+
+        let has_symbols = elements
+            .iter()
+            .any(|element| matches!(element, PatternElement::Symbol { .. }));
+        (has_symbols || parallel.is_some()).then_some(Self {
+            elements,
+            length,
+            parallel,
+        })
+    }
+
+    fn symbols(&self) -> impl Iterator<Item = u16> + '_ {
+        self.elements.iter().filter_map(|element| match element {
+            PatternElement::Symbol { number, .. } => Some(*number),
+            PatternElement::Length(_) => None,
+        })
+    }
+
+    /// The symbols along a line of the given length, as the distance from its start, the symbol number and whether it
+    /// is turned. The pattern starts at the start of the line, with lengths multiplied by `scale`.
+    fn symbol_places(&self, scale: f64, length: f64) -> Vec<(f64, u16, bool)> {
+        let repeat = self.length * scale;
+        if repeat.is_nan() || repeat <= 0.0 || length / repeat > MAX_PATTERN_REPEATS {
+            return vec![];
+        }
+        // Tolerates rounding, so a symbol at the very end of the line is kept.
+        let end = length + 1e-9 * length.max(1.0);
+
+        let mut places = vec![];
+        let mut along = 0.0;
+        while along <= end {
+            for element in &self.elements {
+                match *element {
+                    PatternElement::Length(length) => along += length * scale,
+                    PatternElement::Symbol { number, turned } if along <= end => {
+                        places.push((along, number, turned));
+                    }
+                    PatternElement::Symbol { .. } => {}
+                }
+            }
+        }
+        places
+    }
+}
+
+/// The line types drawn along a line of the line type with the index, as the distance to the left of the line, in
+/// pattern units, and the line type index. The first is the line type itself, at distance 0.
+fn line_type_chain(names: &Names, line_type: usize) -> Vec<(f64, usize)> {
+    let mut chain = vec![(0.0, line_type)];
+    let (mut shift, mut index) = (0.0, line_type);
+    while chain.len() < MAX_CHAIN {
+        let Some((offset, next)) = names
+            .line_pattern(index)
+            .and_then(|pattern| pattern.parallel)
+        else {
+            break;
+        };
+        if next >= names.line_types.len() {
+            break;
+        }
+        (shift, index) = (shift - offset, next);
+        chain.push((shift, index));
+    }
+    chain
+}
+
+/// The symbols and parallel lines that the line type with the index draws along a line from `begin` to `end`, with
+/// the line type of each parallel line. Only symbols whose shape is embedded are drawn.
+fn line_pattern_entities(
+    names: &Names,
+    line_type: usize,
+    begin: Coordinate,
+    end: Coordinate,
+) -> Vec<(dxf::entities::EntityType, Option<String>)> {
+    let (begin, end): (dxf::Point, dxf::Point) = (begin.into(), end.into());
+    let (dx, dy, dz) = (end.x - begin.x, end.y - begin.y, end.z - begin.z);
+    let length = dx.hypot(dy);
+    if length <= 0.0 {
+        return vec![];
+    }
+    let (ux, uy) = (dx / length, dy / length);
+    let scale = names.pattern_scale();
+    let library = names.library(0);
+    let angle = dy.atan2(dx).to_degrees();
+    let mut entities = vec![];
+
+    for (level, (shift, index)) in line_type_chain(names, line_type).into_iter().enumerate() {
+        // The left normal is `(-uy, ux)`.
+        let (sx, sy) = (-uy * shift * scale, ux * shift * scale);
+        let start = dxf::Point::new(begin.x + sx, begin.y + sy, begin.z);
+        // The line itself is drawn by its geometry.
+        if level > 0 {
+            let finish = dxf::Point::new(end.x + sx, end.y + sy, end.z);
+            let line = dxf::entities::Line::new(start.clone(), finish);
+            let line_type = names.line_types.get(index).cloned().flatten();
+            entities.push((dxf::entities::EntityType::Line(line), line_type));
+        }
+
+        let Some(pattern) = names.line_pattern(index) else {
+            continue;
+        };
+        for (along, number, turned) in pattern.symbol_places(scale, length) {
+            if library.is_none_or(|library| symbols::find(library, number).is_none()) {
+                continue;
+            }
+            let insert = dxf::entities::Insert {
+                name: symbol_block_name(library, number),
+                location: dxf::Point::new(
+                    start.x + ux * along,
+                    start.y + uy * along,
+                    start.z + dz * along / length,
+                ),
+                x_scale_factor: scale,
+                y_scale_factor: scale,
+                rotation: if turned { angle + 180.0 } else { angle },
+                ..Default::default()
+            };
+            // Symbols are drawn solid.
+            entities.push((
+                dxf::entities::EntityType::Insert(insert),
+                Some("CONTINUOUS".to_owned()),
+            ));
+        }
+    }
+    entities
 }
 
 /// Converts a font file name to a text style. The style is named after the file stem, e.g. `ARIAL` for
@@ -415,7 +652,11 @@ pub fn is_exported(geometry: &Geometry) -> bool {
 }
 
 /// The entities that draw the geometry, usually one. Contours with gaps are drawn as several polylines.
-fn entity_types(drawing: &mut dxf::Drawing, geometry: Geometry) -> Vec<dxf::entities::EntityType> {
+fn entity_types(
+    drawing: &mut dxf::Drawing,
+    names: &Names,
+    geometry: Geometry,
+) -> Vec<dxf::entities::EntityType> {
     let entity = match geometry {
         Geometry::Point { position, .. } => {
             let point = dxf::entities::ModelPoint::new(position.into());
@@ -534,10 +775,11 @@ fn entity_types(drawing: &mut dxf::Drawing, geometry: Geometry) -> Vec<dxf::enti
             scale,
             rotation,
             symbol,
+            library,
             ..
         } if scale > 0.0 => {
             let insert = dxf::entities::Insert {
-                name: symbol_block_name(symbol),
+                name: symbol_block_name(names.library(library), symbol),
                 location: position.into(),
                 x_scale_factor: scale.into(),
                 y_scale_factor: scale.into(),
@@ -583,6 +825,12 @@ struct Names {
     line_types: Vec<Option<String>>,
     /// Text style names by font index, `None` where the font could not be converted.
     text_styles: Vec<Option<String>>,
+    /// Symbol library names by index, e.g. `F2` for `F2.NCS`.
+    libraries: Vec<String>,
+    /// What line types draw along lines besides dashes, by line type index.
+    line_patterns: Vec<Option<LinePattern>>,
+    /// The map scale, which scales line type patterns.
+    scale: Option<f64>,
 }
 
 /// The line type of the drawing with the name, ignoring case as DXF does.
@@ -602,6 +850,33 @@ fn find_style(drawing: &dxf::Drawing, name: &str) -> Option<String> {
 }
 
 impl Names {
+    /// The name of the symbol library with the index, `None` when there is none or it cannot be part of a block name.
+    fn library(&self, index: u8) -> Option<&str> {
+        self.libraries
+            .get(usize::from(index))
+            .map(String::as_str)
+            .filter(|name| is_valid_table_name(name))
+    }
+
+    /// The factor of line type pattern lengths and of the symbols along lines, the map scale like `$LTSCALE`.
+    fn pattern_scale(&self) -> f64 {
+        self.scale
+            .filter(|scale| scale.is_finite() && *scale > 0.0)
+            .unwrap_or(1.0)
+    }
+
+    /// The pattern of the line type with the index, if it draws more than dashes.
+    fn line_pattern(&self, index: usize) -> Option<&LinePattern> {
+        self.line_patterns.get(index)?.as_ref()
+    }
+
+    fn set_libraries(&mut self, names: &[String]) {
+        self.libraries = names
+            .iter()
+            .map(|name| symbols::library_name(name))
+            .collect();
+    }
+
     /// Adds the entries of a table object to the drawing and records their names.
     fn add(&mut self, drawing: &mut dxf::Drawing, object: &Object) {
         match object {
@@ -631,6 +906,8 @@ impl Names {
                     });
                     self.line_types.push(name);
                 }
+                self.line_patterns
+                    .extend(types.iter().map(LinePattern::new));
             }
             Object::Fonts { names } => {
                 for font in names {
@@ -645,6 +922,8 @@ impl Names {
                     self.text_styles.push(name);
                 }
             }
+            Object::Libraries { names } => self.set_libraries(names),
+            Object::Scale { scale } => self.scale = Some(*scale),
             _ => {}
         }
     }
@@ -660,6 +939,8 @@ impl Names {
                 self.line_types.extend(types.iter().map(|line_type| {
                     dxf_line_type(line_type).and_then(|l| find_line_type(drawing, &l.name))
                 }));
+                self.line_patterns
+                    .extend(types.iter().map(LinePattern::new));
             }
             Object::Fonts { names } => {
                 self.text_styles.extend(
@@ -668,6 +949,8 @@ impl Names {
                         .map(|font| text_style(font).and_then(|s| find_style(drawing, &s.name))),
                 );
             }
+            Object::Libraries { names } => self.set_libraries(names),
+            Object::Scale { scale } => self.scale = Some(*scale),
             _ => {}
         }
     }
@@ -700,8 +983,24 @@ fn geometry_entities(
     };
     let x_data = x_data(&geometry);
     let color = geometry.header().color;
+    let pattern = match geometry {
+        Geometry::Line { begin, end, .. } => {
+            line_pattern_entities(names, usize::from(geometry.header().line_type), begin, end)
+        }
+        _ => vec![],
+    };
+    let common = |mut entity: dxf::entities::Entity| {
+        if let Some(layer) = &layer {
+            entity.common.layer = layer.clone();
+        }
+        // Zero means the geometry takes the color of its layer, which is the DXF default.
+        if color != 0 {
+            entity.common.color = dxf::Color::from_index(color);
+        }
+        entity
+    };
 
-    entity_types(drawing, geometry)
+    let mut entities: Vec<dxf::entities::Entity> = entity_types(drawing, names, geometry)
         .into_iter()
         .map(|entity_type| {
             let mut entity = dxf::entities::Entity::new(entity_type);
@@ -711,19 +1010,21 @@ fn geometry_entities(
                 text.text_style_name = text_style.clone();
             }
             entity.common.x_data.extend(x_data.clone());
-            if let Some(layer) = &layer {
-                entity.common.layer = layer.clone();
-            }
             if let Some(line_type) = &line_type {
                 entity.common.line_type_name = line_type.clone();
             }
-            // Zero means the geometry takes the color of its layer, which is the DXF default.
-            if color != 0 {
-                entity.common.color = dxf::Color::from_index(color);
-            }
-            entity
+            common(entity)
         })
-        .collect()
+        .collect();
+
+    entities.extend(pattern.into_iter().map(|(entity_type, line_type)| {
+        let mut entity = dxf::entities::Entity::new(entity_type);
+        if let Some(line_type) = line_type {
+            entity.common.line_type_name = line_type;
+        }
+        common(entity)
+    }));
+    entities
 }
 
 /// What the DXF output holds, for the summary.
@@ -765,8 +1066,10 @@ pub fn write_dxf(
     let mut names = Names::default();
     // Geometries between a block's begin and end belong to that block, not to the model space.
     let mut block: Option<dxf::Block> = None;
-    // Footprints of the symbols in use, measured on the instance closest to a right angle.
-    let mut symbol_footprints: BTreeMap<u16, Option<SymbolFootprint>> = BTreeMap::new();
+    // The symbols in use by block name, with their library, number, and footprint measured on the instance closest to
+    // a right angle.
+    let mut symbols_in_use: BTreeMap<String, (Option<String>, u16, Option<SymbolFootprint>)> =
+        BTreeMap::new();
     let mut reserved_handles = 0;
     for item in ObjectReader::new(bytes)? {
         inspect(&item);
@@ -803,6 +1106,7 @@ pub fn write_dxf(
                     scale,
                     rotation,
                     symbol,
+                    library,
                     ..
                 } = &geometry
                     && is_exported(&geometry)
@@ -813,11 +1117,30 @@ pub fn write_dxf(
                         f64::from(*scale),
                         f64::from(*rotation),
                     );
-                    let footprint = symbol_footprints.entry(*symbol).or_default();
+                    let library = names.library(*library);
+                    let (_, _, footprint) = symbols_in_use
+                        .entry(symbol_block_name(library, *symbol))
+                        .or_insert_with(|| (library.map(str::to_owned), *symbol, None));
                     if let Some(measured) = measured
                         && footprint.is_none_or(|f| measured.deviation < f.deviation)
                     {
                         *footprint = Some(measured);
+                    }
+                }
+
+                if let Geometry::Line { header, .. } = &geometry
+                    && let Some(library) = names.library(0)
+                {
+                    let chain = line_type_chain(&names, usize::from(header.line_type));
+                    let patterns = chain
+                        .iter()
+                        .filter_map(|&(_, index)| names.line_pattern(index));
+                    for symbol in patterns.flat_map(LinePattern::symbols) {
+                        if symbols::find(library, symbol).is_some() {
+                            symbols_in_use
+                                .entry(symbol_block_name(Some(library), symbol))
+                                .or_insert_with(|| (Some(library.to_owned()), symbol, None));
+                        }
                     }
                 }
 
@@ -841,8 +1164,12 @@ pub fn write_dxf(
         }
     }
 
-    for (symbol, footprint) in symbol_footprints {
-        let block = symbol_block(&mut drawing, symbol, footprint);
+    for (name, (library, symbol, footprint)) in symbols_in_use {
+        let shapes = library.and_then(|library| symbols::find(&library, symbol));
+        let block = match shapes {
+            Some(shapes) => symbol_shape_block(name, shapes),
+            None => symbol_footprint_block(&mut drawing, name, footprint),
+        };
         block.entities.iter().for_each(&mut count);
         drawing.add_block(block);
     }
@@ -871,4 +1198,99 @@ pub fn write_dxf(
     stream.finish()?;
 
     Ok(contents)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_type(segment_count: i8, offset: f32, unknown1: u16, segments: &[f32]) -> LineType {
+        LineType {
+            description: String::new(),
+            name: "TEST".to_owned(),
+            segment_count,
+            pattern_length: 0.0,
+            offset,
+            unknown1,
+            segments: segments.to_vec(),
+            unknown2: vec![],
+        }
+    }
+
+    #[test]
+    fn places_symbols_along_a_line() {
+        // ÇİT-1 as NetCAD exports it: a symbol every 10 units, the first at 5.
+        let pattern = LinePattern::new(&line_type(3, 0.0, 0, &[5.0, 1144.0, 5.0])).unwrap();
+        assert_eq!(pattern.parallel, None);
+        assert_eq!(
+            pattern.symbol_places(1.0, 17.285),
+            [(5.0, 144, false), (15.0, 144, false)]
+        );
+        // The pattern scales with the map scale.
+        assert_eq!(pattern.symbol_places(2.0, 17.285), [(10.0, 144, false)]);
+    }
+
+    #[test]
+    fn keeps_symbols_at_the_ends() {
+        // ISTINAT: a symbol at the start and every 7 units.
+        let pattern = LinePattern::new(&line_type(-2, 1.0, 64, &[1140.0, 7.0])).unwrap();
+        assert_eq!(pattern.parallel, Some((1.0, 64)));
+        assert_eq!(
+            pattern.symbol_places(1.0, 14.0),
+            [(0.0, 140, false), (7.0, 140, false), (14.0, 140, false)]
+        );
+    }
+
+    #[test]
+    fn turns_negative_symbols() {
+        let pattern = LinePattern::new(&line_type(
+            -5,
+            -1.0,
+            107,
+            &[3.5, -1140.0, 7.0, -1140.0, 3.5],
+        ))
+        .unwrap();
+        assert_eq!(
+            pattern.symbol_places(1.0, 15.0),
+            [(3.5, 140, true), (10.5, 140, true)]
+        );
+    }
+
+    #[test]
+    fn leaves_out_unknown_symbols_and_plain_patterns() {
+        // Thousands digits other than 1 have no known meaning.
+        assert_eq!(
+            LinePattern::new(&line_type(5, 0.0, 0, &[2.0, -2128.0, 2.5, -4128.0, 0.5])),
+            None
+        );
+        assert_eq!(LinePattern::new(&line_type(2, 0.0, 0, &[2.0, -1.0])), None);
+        // Symbols without any length would all be at the start.
+        assert_eq!(LinePattern::new(&line_type(1, 0.0, 0, &[1140.0])), None);
+    }
+
+    #[test]
+    fn follows_parallel_line_types() {
+        // DUVAR-1 → DUV2 → DUV3 → DUV1 → DUZ, as in the sample files.
+        let mut names = Names::default();
+        let mut types: Vec<LineType> = (0..110).map(|_| line_type(1, 0.0, 0, &[500.0])).collect();
+        types[10] = line_type(-2, 0.1, 108, &[400.0, 100.0]);
+        types[107] = line_type(-2, 1.0, 0, &[400.0, 100.0]);
+        types[108] = line_type(-2, 0.8, 109, &[400.0, 100.0]);
+        types[109] = line_type(-5, -1.0, 107, &[3.5, -1140.0, 7.0, -1140.0, 3.5]);
+        names.line_types = vec![None; types.len()];
+        names.line_patterns = types.iter().map(LinePattern::new).collect();
+
+        let chain: Vec<(f64, usize)> = line_type_chain(&names, 10)
+            .into_iter()
+            .map(|(shift, index)| ((shift * 1e6_f64).round() / 1e6, index))
+            .collect();
+        assert_eq!(
+            chain,
+            [(0.0, 10), (-0.1, 108), (-0.9, 109), (0.1, 107), (-0.9, 0)]
+        );
+
+        // A loop is cut.
+        names.line_patterns[0] = LinePattern::new(&line_type(-1, 1.0, 0, &[500.0]));
+        assert_eq!(line_type_chain(&names, 0).len(), MAX_CHAIN);
+    }
 }

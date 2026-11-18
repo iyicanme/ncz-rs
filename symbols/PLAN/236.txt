@@ -1,0 +1,2 @@
+# Symbol 236 of PLAN.NCS
+line 0 0 0.035 0.035

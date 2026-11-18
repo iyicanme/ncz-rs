@@ -1,0 +1,5 @@
+# Symbol 195 of F2.NCS
+line -1 0 -1 -2
+line -1 -2 1 -2
+line 1 -2 1 0
+line 1 0 -1 0

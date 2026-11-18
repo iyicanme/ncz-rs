@@ -7,13 +7,16 @@ const MAX_SEGMENTS: usize = 28;
 pub struct LineType {
     pub description: String,
     pub name: String,
-    /// Negative counts are used by line types that also set `offset` and `unknown1`.
+    /// A negative count makes a multi-line, which also draws line type `unknown1` at `offset` to its right.
     pub segment_count: i8,
-    /// Equals the sum of the dash and gap lengths for most line types.
+    /// Equals the sum of the dash and gap lengths for most line types, but not for all.
     pub pattern_length: f32,
+    /// For a negative `segment_count`, the distance of the parallel line type to the right.
     pub offset: f32,
+    /// For a negative `segment_count`, the index of the line type drawn parallel to this one.
     pub unknown1: u16,
-    /// Positive values are dashes and negative values are gaps. Values above 1000 seem to refer to symbols.
+    /// Positive values are dashes and negative values are gaps. `1000 + n` puts symbol `n` of the first library along
+    /// the line, `-(1000 + n)` puts it turned by a half turn. Other thousands digits are of unknown meaning.
     pub segments: Vec<f32>,
     pub unknown2: Vec<u8>,
 }

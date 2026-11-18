@@ -140,7 +140,7 @@ pub enum Geometry {
         area: f64,
         points: Vec<Coordinate>,
     },
-    /// Probably a reference to a symbol in one of the libraries listed in [`crate::object::Object::Libraries`].
+    /// A symbol of one of the libraries listed in [`crate::object::Object::Libraries`].
     Symbol {
         #[serde(flatten)]
         header: Header,
@@ -149,7 +149,8 @@ pub enum Geometry {
         /// In radians.
         rotation: f32,
         symbol: u16,
-        unknown4: u8,
+        /// Index of the symbol's library in [`crate::object::Object::Libraries`].
+        library: u8,
     },
     Contour {
         #[serde(flatten)]
@@ -306,7 +307,7 @@ impl Geometry {
                 let scale = buffer.get_f32()?;
                 let rotation = buffer.get_f32()?;
                 let symbol = buffer.get_u16()?;
-                let unknown4 = buffer.get_u8()?;
+                let library = buffer.get_u8()?;
 
                 Some(Self::Symbol {
                     header,
@@ -314,7 +315,7 @@ impl Geometry {
                     scale,
                     rotation,
                     symbol,
-                    unknown4,
+                    library,
                 })
             }
             7 => {

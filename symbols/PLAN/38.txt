@@ -1,0 +1,8 @@
+# Symbol 38 of PLAN.NCS
+line 0 2 0 -1
+line -8 2 -8 -1
+line 8 2 8 -1
+line -4 4.5 -4 1.5
+line -4 -0.5 -4 -3.5
+line 4 -0.5 4 -3.5
+line 4 4.5 4 1.5

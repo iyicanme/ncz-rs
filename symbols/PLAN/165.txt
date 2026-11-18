@@ -1,0 +1,4 @@
+# Symbol 165 of PLAN.NCS
+circle 0 0 2
+line -2.5 0 2.5 0
+line 0 2.5 0 -2.5

@@ -1,0 +1,9 @@
+# Symbol 164 of PLAN.NCS
+circle 0 0 0.3125
+circle 0 0 0.25
+circle 0 0 0.1875
+circle 0 0 0.125
+circle 0 0 0.0625
+line -0.1875 -0.25 -0.6875 -0.75
+line -0.5 0 -1.3125 -0.8125
+line 0.5 0 -0.3125 -0.8125

@@ -1,0 +1,4 @@
+# Symbol 158 of PLAN.NCS
+circle 0 0 1.5
+line 2 1 2 -1
+line -2 1 -2 -1

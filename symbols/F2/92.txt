@@ -1,0 +1,5 @@
+# Symbol 92 of F2.NCS
+circle 0 0 1.5
+line 0 1.5 0 5.5
+line 0 5.5 -1 4.5
+line 0 5.5 1 4.5

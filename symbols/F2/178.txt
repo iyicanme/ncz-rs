@@ -1,0 +1,4 @@
+# Symbol 178 of F2.NCS
+line -5 0 -5 -5
+line 5 0 5 -5
+line 0 0 0 5.625

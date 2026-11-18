@@ -1,0 +1,4 @@
+# Symbol 149 of PLAN.NCS
+circle 0 0 0.833333
+circle 1.666667 0 0.833333
+circle -1.666667 0 0.833333

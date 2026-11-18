@@ -1,0 +1,4 @@
+# Symbol 189 of F2.NCS
+circle 0 0 0.1
+circle 0 0 0.075
+circle 0 0 0.04375

@@ -1,0 +1,5 @@
+# Symbol 242 of F2.NCS
+line -1 0 1 0
+line 1 0 2 1
+line -1 0 -1 0
+line -1 0 -2 1

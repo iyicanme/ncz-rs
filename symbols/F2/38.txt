@@ -1,0 +1,4 @@
+# Symbol 38 of F2.NCS
+line -5 3.75 -5 0
+line 5 3.75 5 0
+line 0 0 0 -3.75

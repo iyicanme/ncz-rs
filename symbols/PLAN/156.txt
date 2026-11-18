@@ -1,0 +1,4 @@
+# Symbol 156 of PLAN.NCS
+circle 0 0 2.5
+circle 0 0 1.666667
+circle 0 0 0.833333

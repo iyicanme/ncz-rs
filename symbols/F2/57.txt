@@ -1,0 +1,4 @@
+# Symbol 57 of F2.NCS
+line 2.5 0 -2.5 0
+line -2.5 0 0 -7
+line 0 -7 2.5 0

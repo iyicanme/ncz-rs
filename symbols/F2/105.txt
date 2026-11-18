@@ -1,0 +1,4 @@
+# Symbol 105 of F2.NCS
+line 0 0.5 0 -0.5
+line 0 -0.5 1 -0.5
+line 1 -0.5 1 -1.5
