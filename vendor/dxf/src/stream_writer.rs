@@ -65,7 +65,8 @@ impl Drawing {
         }
 
         let text_as_ascii = version <= AcadVersion::R2004;
-        let mut writer = CodePairWriter::new(writer, true, text_as_ascii, version);
+        let mut writer = CodePairWriter::new(writer, true, text_as_ascii, version)
+            .with_text_encoding(self.text_encoding);
         writer.write_prelude()?;
         for pair in &pairs {
             writer.write_code_pair(pair)?;

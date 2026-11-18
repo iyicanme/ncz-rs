@@ -30,6 +30,10 @@ top-level `Cargo.toml`. Changes are marked with `ncz-rs patch` comments:
   the table entries an entity refers to, as `add_entity` does, through `ensure_entity_tables` in `src/drawing.rs`,
   and `handles_needed` counts the handles to set aside. The tests `streamed_entities_match_saved_ones` and
   `stops_when_the_reserved_handles_run_out` cover it.
+- `src/code_pair_writer.rs`, `src/drawing.rs`, `src/stream_writer.rs`: `Drawing::text_encoding` writes the text of
+  versions up to R2004 in a code page, escaping as `\U+` only the characters it cannot encode. Upstream escapes every
+  non-ASCII character. It is `None` by default, which keeps upstream's behaviour. The test `encodes_with_escapes` covers
+  it.
 
 The tests `as_datetime_conversion_test` and `as_double_conversion_test` fail on the unpatched release too.
 

@@ -14,6 +14,8 @@ where
     as_text: bool,
     text_as_ascii: bool,
     version: AcadVersion,
+    /// ncz-rs patch: the code page of text written as ASCII, see `Drawing::text_encoding`.
+    text_encoding: Option<&'static encoding_rs::Encoding>,
 }
 
 impl<'a, T: Write + ?Sized> CodePairWriter<'a, T> {
@@ -28,7 +30,14 @@ impl<'a, T: Write + ?Sized> CodePairWriter<'a, T> {
             as_text,
             text_as_ascii,
             version,
+            text_encoding: None,
         }
+    }
+    /// ncz-rs patch: writes the characters of text written as ASCII that the encoding has in its code page, escaping
+    /// only the others.
+    pub fn with_text_encoding(mut self, encoding: Option<&'static encoding_rs::Encoding>) -> Self {
+        self.text_encoding = encoding;
+        self
     }
     pub fn write_prelude(&mut self) -> DxfResult<()> {
         if !self.as_text {
@@ -53,12 +62,17 @@ impl<'a, T: Write + ?Sized> CodePairWriter<'a, T> {
         match pair.value {
             CodePairValue::Str(ref s) => {
                 let s = escape_control_characters(s);
-                let s = if self.text_as_ascii {
-                    escape_unicode_to_ascii(&s)
-                } else {
-                    s
-                };
-                self.writer.write_fmt(format_args!("{s}\r\n"))?;
+                match (self.text_as_ascii, self.text_encoding) {
+                    (true, Some(encoding)) => {
+                        self.writer.write_all(&encode_with_escapes(&s, encoding))?;
+                        self.writer.write_all(b"\r\n")?;
+                    }
+                    (true, None) => {
+                        let s = escape_unicode_to_ascii(&s);
+                        self.writer.write_fmt(format_args!("{s}\r\n"))?;
+                    }
+                    (false, _) => self.writer.write_fmt(format_args!("{s}\r\n"))?,
+                }
             }
             _ => self.writer.write_fmt(format_args!("{}\r\n", &pair.value))?,
         };
@@ -116,12 +130,7 @@ mod tests {
 
     fn write_in_binary(pair: &CodePair) -> Vec<u8> {
         let mut buf = Cursor::new(vec![]);
-        let mut writer = CodePairWriter {
-            writer: &mut buf,
-            as_text: false,
-            text_as_ascii: true,
-            version: AcadVersion::R2004,
-        };
+        let mut writer = CodePairWriter::new(&mut buf, false, true, AcadVersion::R2004);
         writer
             .write_binary_code_pair(pair)
             .expect("expected write to succeed");
@@ -132,12 +141,7 @@ mod tests {
 
     fn write_in_ascii(pair: &CodePair) -> String {
         let mut buf = Cursor::new(vec![]);
-        let mut writer = CodePairWriter {
-            writer: &mut buf,
-            as_text: true,
-            text_as_ascii: true,
-            version: AcadVersion::R2004,
-        };
+        let mut writer = CodePairWriter::new(&mut buf, true, true, AcadVersion::R2004);
         writer
             .write_ascii_code_pair(pair)
             .expect("expected write to succeed");
@@ -209,5 +213,37 @@ mod tests {
         let actual = write_in_ascii(&pair);
         let expected = "100\r\nA\r\n";
         assert_eq!(expected, actual);
+    }
+}
+
+/// ncz-rs patch: the text in the encoding, with the characters the encoding cannot represent as `\U+` escapes.
+fn encode_with_escapes(text: &str, encoding: &'static encoding_rs::Encoding) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(text.len());
+    let mut buffer = [0; 4];
+    for c in text.chars() {
+        if c.is_ascii() {
+            bytes.push(c as u8);
+            continue;
+        }
+        let (encoded, _, unmappable) = encoding.encode(c.encode_utf8(&mut buffer));
+        if unmappable {
+            bytes.extend(escape_unicode_to_ascii(c.encode_utf8(&mut buffer)).bytes());
+        } else {
+            bytes.extend_from_slice(&encoded);
+        }
+    }
+    bytes
+}
+
+#[cfg(test)]
+mod encoding_tests {
+    use super::*;
+
+    #[test]
+    fn encodes_with_escapes() {
+        assert_eq!(
+            encode_with_escapes("İĞ ş€你", encoding_rs::WINDOWS_1254),
+            b"\xdd\xd0 \xfe\x80\\U+4F60"
+        );
     }
 }

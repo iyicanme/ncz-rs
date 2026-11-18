@@ -76,6 +76,11 @@ pub struct Drawing {
     /// The thumbnail image preview of the drawing.
     #[cfg_attr(feature = "serialize", serde(skip))]
     pub thumbnail: Option<DynamicImage>,
+
+    /// ncz-rs patch: the code page of the text of versions up to R2004, which should match `$DWGCODEPAGE`. Characters
+    /// it cannot encode, and all non-ASCII characters when it is `None` (the default), are written as `\U+` escapes.
+    #[cfg_attr(feature = "serialize", serde(skip))]
+    pub text_encoding: Option<&'static Encoding>,
 }
 
 // public implementation
@@ -98,6 +103,7 @@ impl Drawing {
             __entities: vec![],
             __objects: vec![],
             thumbnail: None,
+            text_encoding: None,
         };
         drawing.normalize();
         drawing
@@ -199,7 +205,8 @@ impl Drawing {
         let pairs = self.code_pairs()?;
         let text_as_ascii = self.header.version <= AcadVersion::R2004;
         let mut code_pair_writer =
-            CodePairWriter::new(writer, as_ascii, text_as_ascii, self.header.version);
+            CodePairWriter::new(writer, as_ascii, text_as_ascii, self.header.version)
+                .with_text_encoding(self.text_encoding);
         code_pair_writer.write_prelude()?;
         for pair in pairs {
             code_pair_writer.write_code_pair(&pair)?;

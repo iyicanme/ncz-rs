@@ -1219,6 +1219,11 @@ pub fn write_dxf(
     let mut drawing = dxf::Drawing::new();
     // R12 has neither extended data nor a thumbnail.
     drawing.header.version = dxf::enums::AcadVersion::R2000;
+    // Text before R2007 is in the code page `$DWGCODEPAGE` names. Turkish Windows' code page holds the Turkish letters,
+    // which NCZ files store in it too. Without it, names and texts carried `\U+` escapes (`HAT_B\U+0130NA`), which some
+    // programs show as they are.
+    drawing.header.drawing_code_page = "ANSI_1254".to_owned();
+    drawing.text_encoding = Some(encoding_rs::WINDOWS_1254);
     drawing.add_app_id(dxf::tables::AppId {
         name: APP_ID.to_owned(),
         ..Default::default()
