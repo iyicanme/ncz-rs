@@ -69,6 +69,31 @@ mod tests {
     use crate::*;
     use float_cmp::approx_eq;
 
+    #[test]
+    fn write_layer_true_color_and_no_default_transparency() {
+        // ncz-rs patch: layers have a true color (group 420) from R2004, and entities leave out transparency 0, which
+        // is not a valid value.
+        let mut drawing = Drawing::new();
+        drawing.header.version = AcadVersion::R2004;
+        drawing.add_layer(Layer {
+            name: String::from("BLUE"),
+            color: Color::from_index(5),
+            color_24_bit: 0x0000ff,
+            ..Default::default()
+        });
+        drawing.add_entity(Entity::new(EntityType::Line(Line::default())));
+        assert_contains_pairs(
+            &drawing,
+            vec![
+                CodePair::new_str(2, "BLUE"),
+                CodePair::new_i16(70, 0),
+                CodePair::new_i16(62, 5),
+                CodePair::new_i32(420, 0x0000ff),
+            ],
+        );
+        assert!(!to_test_string(&drawing).contains("\r\n440\r\n"));
+    }
+
     fn read_table(table_name: &str, value_pairs: Vec<CodePair>) -> Drawing {
         let mut pairs = vec![
             CodePair::new_str(0, "SECTION"),

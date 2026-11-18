@@ -39,6 +39,10 @@ top-level `Cargo.toml`. Changes are marked with `ncz-rs patch` comments:
   written on layer `0` without an owner, and the `SEQEND` without its common values. The tests `write_2d_polyline` and
   `write_3d_polyline` expect the owner, and `polyline_children_take_its_layer` checks the layer. It fails on the
   unpatched release.
+- `spec/TableSpec.xml`: layers have a true color, `Layer::color_24_bit` (group 420, R2004 on), as entities do.
+- `spec/EntitiesSpec.xml`: an entity's `transparency` (group 440) is left out when it is 0, which is not a valid
+  value. ezdxf repaired it on every entity of an R2004 file. The test `write_layer_true_color_and_no_default_transparency`
+  covers both.
 
 The tests `as_datetime_conversion_test` and `as_double_conversion_test` fail on the unpatched release too.
 

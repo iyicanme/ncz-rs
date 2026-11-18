@@ -1,7 +1,8 @@
 use crate::coordinate::Coordinate;
 use crate::geometry::{Geometry, Header, POLYLINE_CLOSED, POLYLINE_CURVE, POLYLINE_SMOOTH_CURVE};
 use crate::line_type::LineType;
-use crate::object::{LAYER_POINT_MARKERS, LAYER_VISIBLE, Object};
+use crate::colors::{DEFAULT_PALETTE, dxf_color};
+use crate::object::{LAYER_POINT_MARKERS, LAYER_VISIBLE, MetadataContent, Object};
 use crate::symbols::{self, Shape};
 use crate::{ObjectReader, ParseFailure};
 use dxf::stream_writer::handles_needed;
@@ -25,14 +26,30 @@ const CURVE_SEGMENTS_PER_SPAN: usize = 8;
 /// Slant of italic text in degrees. DXF has no italic flag for text, so it is drawn obliqued.
 const ITALIC_OBLIQUE_ANGLE: f64 = 15.0;
 
+/// The elevations kept, in metres. The corpus' real elevations lie between about -200 and 1,700 m (99.9% of the
+/// non-zero values); the range adds a margin for the rest of Türkiye, up to Ağrı at 5,137 m.
+const ELEVATIONS: std::ops::RangeInclusive<f64> = -500.0..=6000.0;
+/// Elevations closer to 0 are noise: survey heights have millimetre precision.
+const ELEVATION_NOISE: f64 = 1e-4;
+
+/// An elevation as it is written, 0 when it is not a real elevation. Many files hold leftover memory in elevations
+/// they do not use: 64,000 values of the corpus lie between 1,700 m and 1e38 (constant odd values along whole
+/// polylines, such as 6750.208 on 614 vertices), 7,500 are not finite, which readers such as AutoCAD reject, and
+/// 600,000 are below 1e-6. NetCAD's own export writes them as they are.
+fn elevation(z: f64) -> f64 {
+    if ELEVATIONS.contains(&z) && z.abs() >= ELEVATION_NOISE {
+        z
+    } else {
+        0.0
+    }
+}
+
 /// NCZ stores northing as x and easting as y, DXF puts easting on X. Angles are already in the east-north frame.
-///
-/// Values that are not finite become 0. Some files hold leftover memory in fields they do not use, such as the
-/// elevations of the polylines in `DOGANLAR_ITRF.NCZ`, and readers such as AutoCAD reject a DXF that contains `NaN`.
+/// Elevations are cleaned, see [`elevation`], and other values that are not finite become 0.
 impl From<Coordinate> for dxf::Point {
     fn from(value: Coordinate) -> Self {
         let finite = |v: f64| if v.is_finite() { v } else { 0.0 };
-        dxf::Point::new(finite(value.y), finite(value.x), finite(value.z))
+        dxf::Point::new(finite(value.y), finite(value.x), elevation(value.z))
     }
 }
 
@@ -100,7 +117,14 @@ fn catmull_rom(
 /// its DXF export, so its own curve is not known. A centripetal Catmull-Rom spline is assumed, which keeps every
 /// stored point. The ends of an open curve continue straight, as if mirrored.
 fn curve_points(points: Vec<Coordinate>, closed: bool) -> Vec<Coordinate> {
-    let mut points = points;
+    // Garbage elevations would otherwise blend into the points in between.
+    let mut points: Vec<Coordinate> = points
+        .into_iter()
+        .map(|point| Coordinate {
+            z: elevation(point.z),
+            ..point
+        })
+        .collect();
     points.dedup_by(|a, b| a.x == b.x && a.y == b.y);
     // A closed polyline may repeat its first point at the end.
     if closed
@@ -148,22 +172,39 @@ fn curve_points(points: Vec<Coordinate>, closed: bool) -> Vec<Coordinate> {
     curve
 }
 
+/// A polyline through the points: a 2D `LWPOLYLINE` at their elevation when they all share one, which is smaller and
+/// more widely supported, else a 3D `POLYLINE`.
 fn polyline(
     drawing: &mut dxf::Drawing,
     points: Vec<Coordinate>,
     closed: bool,
-) -> dxf::entities::EntityType {
+) -> dxf::entities::Entity {
+    let points: Vec<dxf::Point> = points.into_iter().map(Into::into).collect();
+    if points.windows(2).all(|pair| pair[0].z == pair[1].z) {
+        let mut polyline = dxf::entities::LwPolyline::default();
+        polyline.set_is_closed(closed);
+        polyline.vertices = points
+            .iter()
+            .map(|point| dxf::LwPolylineVertex {
+                x: point.x,
+                y: point.y,
+                ..Default::default()
+            })
+            .collect();
+        let mut entity = dxf::entities::Entity::new(dxf::entities::EntityType::LwPolyline(polyline));
+        entity.common.elevation = points.first().map_or(0.0, |point| point.z);
+        return entity;
+    }
+
     let mut polyline = dxf::entities::Polyline::default();
     polyline.set_is_3d_polyline(true);
     polyline.set_is_closed(closed);
-
     for point in points {
-        let mut vertex = dxf::entities::Vertex::new(point.into());
+        let mut vertex = dxf::entities::Vertex::new(point);
         vertex.set_is_3d_polyline_vertex(true);
         polyline.add_vertex(drawing, vertex);
     }
-
-    dxf::entities::EntityType::Polyline(polyline)
+    dxf::entities::Entity::new(dxf::entities::EntityType::Polyline(polyline))
 }
 
 /// An axis aligned rectangle with the given opposite corners, at the elevation of the first.
@@ -171,7 +212,7 @@ fn rectangle(
     drawing: &mut dxf::Drawing,
     corner1: Coordinate,
     corner2: Coordinate,
-) -> dxf::entities::EntityType {
+) -> dxf::entities::Entity {
     rotated_rectangle(drawing, corner1, corner2, 0.0)
 }
 
@@ -182,8 +223,8 @@ fn rotated_rectangle(
     corner1: Coordinate,
     corner2: Coordinate,
     rotation: f64,
-) -> dxf::entities::EntityType {
-    let z = corner1.z;
+) -> dxf::entities::Entity {
+    let z = elevation(corner1.z);
     let (sin, cos) = rotation.sin_cos();
     // NCZ stores northing as x and easting as y, so a counter-clockwise turn is clockwise in x/y.
     let (width, height) = (corner2.x - corner1.x, corner2.y - corner1.y);
@@ -309,11 +350,7 @@ fn symbol_footprint_block(
     // `rectangle` takes NCZ coordinates, which have the axes the other way round.
     let corner = |(x, y)| Coordinate { x: y, y: x, z: 0.0 };
 
-    let entity = by_block(dxf::entities::Entity::new(rectangle(
-        drawing,
-        corner(min),
-        corner(max),
-    )));
+    let entity = by_block(rectangle(drawing, corner(min), corner(max)));
 
     dxf::Block {
         name,
@@ -711,21 +748,15 @@ fn x_data(geometry: &Geometry) -> Option<dxf::XData> {
     })
 }
 
-/// Layer colors are assumed to share the AutoCAD color index palette. Zero is not a valid layer color in DXF,
-/// so it falls back to white.
-fn layer_color(color: u8) -> dxf::Color {
-    match color {
-        0 => dxf::Color::from_index(7),
-        color => dxf::Color::from_index(color),
-    }
-}
 
 /// Whether the geometry has a DXF counterpart, the others are left out of the drawing.
 pub fn is_exported(geometry: &Geometry) -> bool {
     match geometry {
         // Symbols with no scale are not drawn, NetCAD stores empty bounds for them.
         Geometry::Symbol { scale, .. } => *scale > 0.0,
-        Geometry::Image { .. } | Geometry::Empty { .. } | Geometry::Other { .. } => false,
+        // Pictures and other type-15 objects are drawn as their frame, when they have one.
+        Geometry::Image { header, .. } => header.lower_bound.x <= header.upper_bound.x,
+        Geometry::Empty { .. } | Geometry::Other { .. } => false,
         _ => true,
     }
 }
@@ -735,7 +766,7 @@ fn entity_types(
     drawing: &mut dxf::Drawing,
     names: &Names,
     geometry: Geometry,
-) -> Vec<dxf::entities::EntityType> {
+) -> Vec<dxf::entities::Entity> {
     let entity = match geometry {
         Geometry::Point { position, .. } => {
             let point = dxf::entities::ModelPoint::new(position.into());
@@ -744,6 +775,10 @@ fn entity_types(
         Geometry::Line { begin, end, .. } => {
             let line = dxf::entities::Line::new(begin.into(), end.into());
             dxf::entities::EntityType::Line(line)
+        }
+        // A circle without a radius (16 in the corpus) is not valid in DXF, it marks a point.
+        Geometry::Circle { center, radius, .. } if !(radius > 0.0 && radius.is_finite()) => {
+            dxf::entities::EntityType::ModelPoint(dxf::entities::ModelPoint::new(center.into()))
         }
         Geometry::Circle { center, radius, .. } => {
             let circle = dxf::entities::Circle::new(center.into(), radius);
@@ -802,7 +837,7 @@ fn entity_types(
             } else {
                 points
             };
-            polyline(drawing, points, closed)
+            return vec![polyline(drawing, points, closed)];
         }
         Geometry::Contour {
             points,
@@ -837,9 +872,14 @@ fn entity_types(
             corner2,
             rotation,
             ..
-        } => rotated_rectangle(drawing, corner1, corner2, rotation.into()),
+        } => return vec![rotated_rectangle(drawing, corner1, corner2, rotation.into())],
         Geometry::MapSheet { header, .. } => {
-            rectangle(drawing, header.lower_bound, header.upper_bound)
+            return vec![rectangle(drawing, header.lower_bound, header.upper_bound)];
+        }
+        // The frame of a picture, rich text or other type-15 object, whose content is not exported. Its stored bounds
+        // are the frame: all 8 in the corpus are unrotated.
+        Geometry::Image { header, .. } if header.lower_bound.x <= header.upper_bound.x => {
+            return vec![rectangle(drawing, header.lower_bound, header.upper_bound)];
         }
         Geometry::Triangle {
             vertices: [first, second, third],
@@ -875,7 +915,7 @@ fn entity_types(
         }
     };
 
-    vec![entity]
+    vec![dxf::entities::Entity::new(entity)]
 }
 
 /// The DXF type name of an entity, as the summary counts it.
@@ -890,6 +930,7 @@ fn entity_name(entity: &dxf::entities::EntityType) -> &'static str {
         EntityType::Line(_) => "LINE",
         EntityType::ModelPoint(_) => "POINT",
         EntityType::Polyline(_) => "POLYLINE",
+        EntityType::LwPolyline(_) => "LWPOLYLINE",
         EntityType::Text(_) => "TEXT",
         _ => "OTHER",
     }
@@ -912,6 +953,11 @@ struct Names {
     scale: Option<f64>,
     /// Whether NetCAD draws a marker at the points of the layer, by layer index, see [`LAYER_POINT_MARKERS`].
     point_markers: Vec<bool>,
+    /// NetCAD palette numbers of the layers, by layer index.
+    layer_colors: Vec<u8>,
+    /// The file's own palette entries (from `LEX.ST2`), by palette number. It is only complete once the whole file
+    /// was read, so the second pass starts with the first pass's.
+    palette: Vec<Option<[u8; 3]>>,
 }
 
 /// The line type of the drawing with the name, ignoring case as DXF does.
@@ -940,6 +986,22 @@ impl Names {
     }
 
     /// The factor of line type pattern lengths and of the symbols along lines, the map scale like `$LTSCALE`.
+    /// The DXF colour index and true colour of a NetCAD palette number, see [`crate::colors`]. Numbers whose colour is
+    /// not known are written as they are.
+    fn color(&self, number: u8) -> (u8, Option<i32>) {
+        let rgb = self
+            .palette
+            .get(usize::from(number))
+            .copied()
+            .flatten()
+            .or(DEFAULT_PALETTE[usize::from(number)]);
+        match (rgb, number) {
+            (Some(rgb), _) => dxf_color(rgb),
+            (None, 0) => (7, None),
+            (None, number) => (number, None),
+        }
+    }
+
     fn pattern_scale(&self) -> f64 {
         self.scale
             .filter(|scale| scale.is_finite() && *scale > 0.0)
@@ -965,14 +1027,18 @@ impl Names {
                 for layer in layers {
                     let exists = drawing.layers().any(|l| l.name == layer.name);
                     if !layer.name.is_empty() && !exists {
+                        // The file's palette comes later, in `LEX.ST2`, which sets the colour again.
+                        let (index, true_color) = self.color(layer.color);
                         drawing.add_layer(dxf::tables::Layer {
                             name: layer.name.clone(),
-                            color: layer_color(layer.color),
+                            color: dxf::Color::from_index(index),
+                            color_24_bit: true_color.unwrap_or(0),
                             is_layer_on: layer.flags & LAYER_VISIBLE != 0,
                             ..Default::default()
                         });
                     }
                     self.layers.push(layer.name.clone());
+                    self.layer_colors.push(layer.color);
                     self.point_markers
                         .push(layer.flags & LAYER_POINT_MARKERS != 0);
                 }
@@ -1007,6 +1073,25 @@ impl Names {
             }
             Object::Libraries { names } => self.set_libraries(names),
             Object::Scale { scale } => self.scale = Some(*scale),
+            // One entry per layer, in the order of the layer table: the layer's colour, which is also the file's
+            // palette entry for the layer's colour number.
+            Object::Metadata {
+                content: MetadataContent::LayerStyles { layers, .. },
+                ..
+            } => {
+                for ((name, &number), style) in self.layers.iter().zip(&self.layer_colors).zip(layers) {
+                    let slot = usize::from(number);
+                    if self.palette.len() <= slot {
+                        self.palette.resize(slot + 1, None);
+                    }
+                    self.palette[slot].get_or_insert(style.rgb);
+                    let (index, true_color) = dxf_color(style.rgb);
+                    if let Some(layer) = drawing.layers_mut().find(|layer| &layer.name == name) {
+                        layer.color = dxf::Color::from_index(index);
+                        layer.color_24_bit = true_color.unwrap_or(0);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1017,6 +1102,8 @@ impl Names {
             Object::Layers { layers, .. } => {
                 self.layers
                     .extend(layers.iter().map(|layer| layer.name.clone()));
+                self.layer_colors
+                    .extend(layers.iter().map(|layer| layer.color));
                 self.point_markers.extend(
                     layers
                         .iter()
@@ -1100,15 +1187,16 @@ fn geometry_entities(
         }
         // Zero means the geometry takes the color of its layer, which is the DXF default.
         if color != 0 {
-            entity.common.color = dxf::Color::from_index(color);
+            let (index, true_color) = names.color(color);
+            entity.common.color = dxf::Color::from_index(index);
+            entity.common.color_24_bit = true_color.unwrap_or(0);
         }
         entity
     };
 
     let mut entities: Vec<dxf::entities::Entity> = entity_types(drawing, names, geometry)
         .into_iter()
-        .map(|entity_type| {
-            let mut entity = dxf::entities::Entity::new(entity_type);
+        .map(|mut entity| {
             if let (dxf::entities::EntityType::Text(text), Some(text_style)) =
                 (&mut entity.specific, &text_style)
             {
@@ -1132,9 +1220,7 @@ fn geometry_entities(
     entities
 }
 
-/// The box around the entities of the model space, for the `$EXTMIN` and `$EXTMAX` header values. The extents an NCZ
-/// file stores are often stale: in 3 of the 6 sample files they cover only part of the drawing, so viewers that zoom
-/// to the header extents showed little or nothing.
+/// A 2D box around points, see [`Extents`].
 ///
 /// The box is 2D, as NetCAD writes it. Elevations are left out since some polylines store garbage there (values up
 /// to 1e37 in `ALINCA_ITRF`, which NetCAD exports too), and a box that tall would make a zoom to the extents show
@@ -1192,9 +1278,121 @@ impl Bounds {
                     self.add(&vertex.location);
                 }
             }
+            EntityType::LwPolyline(polyline) => {
+                for vertex in &polyline.vertices {
+                    self.add(&dxf::Point::new(vertex.x, vertex.y, 0.0));
+                }
+            }
             EntityType::Text(text) => self.add(&text.location),
             _ => {}
         }
+    }
+
+    fn union(&mut self, other: &Bounds) {
+        if let Some((min, max)) = &other.0 {
+            self.add(min);
+            self.add(max);
+        }
+    }
+}
+
+/// Size of the grid cells that [`Extents`] counts entities in, in drawing units.
+const EXTENTS_CELL: f64 = 1000.0;
+/// A gap in the distances from the drawing's centre that starts stray geometry must be at least this long…
+const STRAY_GAP: f64 = 20_000.0;
+/// …and at least this many times the distance before it…
+const STRAY_GAP_RATIO: f64 = 2.0;
+/// …and what lies beyond it at most this share of the entities.
+const STRAY_SHARE: f64 = 0.01;
+
+/// The box around the entities of the model space, for the extents and limits in the header and the opening view. The
+/// extents an NCZ file stores are often stale: in 3 of the 6 sample files they cover only part of the drawing, so
+/// viewers that zoom to the header extents showed little or nothing.
+///
+/// A few files hold a few stray entities far from the rest, such as 6 near (0, 0) in `436-5,6,7(yeşil)(imar)`, whose
+/// drawing lies around (106,000, 106,000). They stay in the drawing but are left out of the box, which would otherwise
+/// be mostly empty. Entities count by the centre of their box, in a grid. Walking out from the weighted median cell,
+/// the box stops at the first gap of at least 20 km that also doubles the distance, provided at most 1% of the entities
+/// lie beyond it. Real data spreads continuously, even over 160 km in multi-site files, and a real second site holds
+/// more than 1%, so only clearly stray geometry is left out.
+#[derive(Debug, Default)]
+struct Extents {
+    /// Entity count and box by grid cell.
+    cells: BTreeMap<(i64, i64), (usize, Bounds)>,
+}
+
+impl Extents {
+    fn add_entity(&mut self, entity: &dxf::entities::Entity) {
+        let mut bounds = Bounds::default();
+        bounds.add_entity(entity);
+        let Some((min, max)) = &bounds.0 else {
+            return;
+        };
+        let cell = |a: f64, b: f64| ((a + b) / 2.0 / EXTENTS_CELL).floor() as i64;
+        let (count, cell_bounds) = self
+            .cells
+            .entry((cell(min.x, max.x), cell(min.y, max.y)))
+            .or_default();
+        *count += 1;
+        cell_bounds.union(&bounds);
+    }
+
+    /// The box, and how many entities were left out of it.
+    fn bounds(&self) -> (Bounds, usize) {
+        let total: usize = self.cells.values().map(|(count, _)| count).sum();
+        if total == 0 {
+            return (Bounds::default(), 0);
+        }
+        let median = |axis: fn(&(i64, i64)) -> i64| {
+            let mut keys: Vec<(i64, usize)> = self
+                .cells
+                .iter()
+                .map(|(key, (count, _))| (axis(key), *count))
+                .collect();
+            keys.sort_unstable();
+            let mut seen = 0;
+            for (value, count) in keys {
+                seen += count;
+                if seen * 2 >= total {
+                    return (value as f64 + 0.5) * EXTENTS_CELL;
+                }
+            }
+            unreachable!("the counts add up to the total")
+        };
+        let center = (median(|key| key.0), median(|key| key.1));
+
+        let mut cells: Vec<(f64, usize, &Bounds)> = self
+            .cells
+            .iter()
+            .map(|(&(x, y), (count, bounds))| {
+                let (cx, cy) = ((x as f64 + 0.5) * EXTENTS_CELL, (y as f64 + 0.5) * EXTENTS_CELL);
+                ((cx - center.0).hypot(cy - center.1), *count, bounds)
+            })
+            .collect();
+        cells.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        let mut kept = cells.len();
+        let mut beyond = total;
+        for index in 0..cells.len() {
+            if index > 0 {
+                let (distance, previous) = (cells[index].0, cells[index - 1].0.max(EXTENTS_CELL));
+                if distance >= STRAY_GAP
+                    && distance >= STRAY_GAP_RATIO * previous
+                    && beyond as f64 <= STRAY_SHARE * total as f64
+                {
+                    kept = index;
+                    break;
+                }
+            }
+            beyond -= cells[index].1;
+        }
+
+        let mut bounds = Bounds::default();
+        for (_, _, cell_bounds) in &cells[..kept] {
+            bounds.union(cell_bounds);
+        }
+        let left_out = cells[kept..].iter().map(|(_, count, _)| count).sum();
+        (bounds, left_out)
     }
 }
 
@@ -1217,12 +1415,15 @@ pub fn write_dxf(
     mut inspect: impl FnMut(&Result<Object, ParseFailure>),
 ) -> Result<DxfContents, Box<dyn std::error::Error>> {
     let mut drawing = dxf::Drawing::new();
-    // R12 has neither extended data nor a thumbnail.
-    drawing.header.version = dxf::enums::AcadVersion::R2000;
+    // R12 has neither extended data nor a thumbnail, and true colours (group 420) need R2004.
+    drawing.header.version = dxf::enums::AcadVersion::R2004;
     // Text before R2007 is in the code page `$DWGCODEPAGE` names. Turkish Windows' code page holds the Turkish letters,
     // which NCZ files store in it too. Without it, names and texts carried `\U+` escapes (`HAT_B\U+0130NA`), which some
     // programs show as they are.
     drawing.header.drawing_code_page = "ANSI_1254".to_owned();
+    // NCZ coordinates are metres in a national or local grid.
+    drawing.header.default_drawing_units = dxf::enums::Units::Meters;
+    drawing.header.drawing_units = dxf::enums::DrawingUnits::Metric;
     drawing.text_encoding = Some(encoding_rs::WINDOWS_1254);
     drawing.add_app_id(dxf::tables::AppId {
         name: APP_ID.to_owned(),
@@ -1247,8 +1448,11 @@ pub fn write_dxf(
     let mut symbols_in_use: BTreeMap<String, (Option<String>, u16, Option<SymbolFootprint>)> =
         BTreeMap::new();
     let mut point_markers: BTreeSet<PointMarker> = BTreeSet::new();
+    // Block entities with their own colour, by block name, entity range and palette number. They are coloured again
+    // once the whole palette is known.
+    let mut block_colors: BTreeMap<String, Vec<(std::ops::Range<usize>, u8)>> = BTreeMap::new();
     let mut reserved_handles = 0;
-    let mut bounds = Bounds::default();
+    let mut extents = Extents::default();
     for item in ObjectReader::new(bytes)? {
         inspect(&item);
         let Ok(object) = item else { continue };
@@ -1327,15 +1531,23 @@ pub fn write_dxf(
 
                 match &mut block {
                     Some(block) => {
+                        let number = geometry.header().color;
+                        let first = block.entities.len();
                         for entity in geometry_entities(&mut drawing, &names, geometry) {
                             count(&entity);
                             block.entities.push(entity);
+                        }
+                        if number != 0 {
+                            block_colors
+                                .entry(block.name.clone())
+                                .or_default()
+                                .push((first..block.entities.len(), number));
                         }
                     }
                     None => {
                         for entity in geometry_entities(&mut scratch, &names, geometry) {
                             count(&entity);
-                            bounds.add_entity(&entity);
+                            extents.add_entity(&entity);
                             drawing.prepare_entity(&entity);
                             reserved_handles += handles_needed(&entity);
                         }
@@ -1346,10 +1558,31 @@ pub fn write_dxf(
         }
     }
 
+    for block in drawing.blocks_mut() {
+        for (range, number) in block_colors.get(&block.name).into_iter().flatten() {
+            let (index, true_color) = names.color(*number);
+            for entity in &mut block.entities[range.clone()] {
+                entity.common.color = dxf::Color::from_index(index);
+                entity.common.color_24_bit = true_color.unwrap_or(0);
+            }
+        }
+    }
+
+    let (bounds, _) = extents.bounds();
     if let Bounds(Some((min, max))) = bounds {
         // NetCAD writes the bounds of its entities as the limits too, which are 2D.
         drawing.header.minimum_drawing_limits = min.clone();
         drawing.header.maximum_drawing_limits = max.clone();
+        // The view a reader opens with, for readers that do not zoom to the extents: the bounds with a margin, tall
+        // enough for a window of 3:2.
+        let (width, height) = (max.x - min.x, max.y - min.y);
+        let center = dxf::Point::new((min.x + max.x) / 2.0, (min.y + max.y) / 2.0, 0.0);
+        let view_height = (height.max(width / 1.5) * 1.05).max(1.0);
+        for view_port in drawing.view_ports_mut().filter(|v| v.name.eq_ignore_ascii_case("*ACTIVE")) {
+            view_port.view_center = center.clone();
+            view_port.view_height = view_height;
+            view_port.view_port_aspect_ratio = 1.5;
+        }
         drawing.header.minimum_drawing_extents = min;
         drawing.header.maximum_drawing_extents = max;
     }
@@ -1374,7 +1607,10 @@ pub fn write_dxf(
 
     // Second pass: the entities of the model space.
     let mut stream = drawing.save_streaming(writer, reserved_handles)?;
-    let mut names = Names::default();
+    let mut names = Names {
+        palette: names.palette,
+        ..Names::default()
+    };
     let mut in_block = false;
     for item in ObjectReader::new(bytes)? {
         let Ok(object) = item else { continue };
@@ -1410,6 +1646,43 @@ mod tests {
             segments: segments.to_vec(),
             unknown2: vec![],
         }
+    }
+
+    #[test]
+    fn extents_leave_out_stray_geometry() {
+        use dxf::entities::{Entity, EntityType, ModelPoint};
+        use dxf::Point;
+
+        let point = |x: f64, y: f64| Entity::new(EntityType::ModelPoint(ModelPoint::new(Point::new(x, y, 0.0))));
+        let mut extents = Extents::default();
+        // A drawing of 200 points spread over 50 km, and 1 point 150 km away.
+        for i in 0..200 {
+            extents.add_entity(&point(106_000.0 + f64::from(i) * 250.0, 106_000.0));
+        }
+        extents.add_entity(&point(0.0, 0.0));
+        let (bounds, left_out) = extents.bounds();
+        assert_eq!(left_out, 1);
+        assert_eq!(
+            bounds,
+            Bounds(Some((Point::new(106_000.0, 106_000.0, 0.0), Point::new(155_750.0, 106_000.0, 0.0))))
+        );
+
+        // A second site of more than 1% stays in.
+        for i in 0..10 {
+            extents.add_entity(&point(f64::from(i), 0.0));
+        }
+        assert_eq!(extents.bounds().1, 0);
+    }
+
+    #[test]
+    fn cleans_elevations() {
+        assert_eq!(elevation(788.533), 788.533);
+        assert_eq!(elevation(-12.5), -12.5);
+        assert_eq!(elevation(5137.0), 5137.0);
+        assert_eq!(elevation(6750.208), 0.0);
+        assert_eq!(elevation(-1.2e34), 0.0);
+        assert_eq!(elevation(f64::NAN), 0.0);
+        assert_eq!(elevation(3.19e-27), 0.0);
     }
 
     #[test]

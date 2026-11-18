@@ -22,7 +22,8 @@
     <Field Name="preview_image_data" Code="310" Type="Vec&lt;u8&gt;" DefaultValue="vec![]" AllowMultiples="true" MinVersion="R2000" />
     <Field Name="color_24_bit" Code="420" Type="i32" DefaultValue="0" DisableWritingDefault="true" MinVersion="R2004" />
     <Field Name="color_name" Code="430" Type="String" DefaultValue="String::new()" MinVersion="R2004" />
-    <Field Name="transparency" Code="440" Type="i32" DefaultValue="0" MinVersion="R2004" />
+    <!-- ncz-rs patch: 0 is not a valid transparency, readers fix every entity; leaving it out means by layer -->
+    <Field Name="transparency" Code="440" Type="i32" DefaultValue="0" DisableWritingDefault="true" MinVersion="R2004" />
     <Pointer Name="plot_style" Code="390" MinVersion="R2007" />
     <Field Name="shadow_mode" Code="284" Type="ShadowMode" DefaultValue="ShadowMode::CastsAndReceivesShadows" ReadConverter="enum_from_number!(ShadowMode, CastsAndReceivesShadows, from_i16, {})" WriteConverter="{} as i16" MinVersion="R2007" />
     <WriteOrder>

@@ -1,6 +1,7 @@
 use crate::object::{GEOMETRY_HEADER_LENGTH, Object};
 use bopper::{BigEndianReadBuffer, ReadBuffer};
 
+pub mod colors;
 pub mod coordinate;
 #[cfg(feature = "dxf")]
 pub mod dxf_export;
