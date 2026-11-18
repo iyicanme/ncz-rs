@@ -34,6 +34,11 @@ top-level `Cargo.toml`. Changes are marked with `ncz-rs patch` comments:
   versions up to R2004 in a code page, escaping as `\U+` only the characters it cannot encode. Upstream escapes every
   non-ASCII character. It is `None` by default, which keeps upstream's behaviour. The test `encodes_with_escapes` covers
   it.
+- `src/entity.rs`, `Entity::add_code_pairs`: the vertices and `SEQEND` of a `POLYLINE`, and the `SEQEND` of an `INSERT`
+  with attributes, are written with the layer and space of their entity, and it owns them (group 330). They were
+  written on layer `0` without an owner, and the `SEQEND` without its common values. The tests `write_2d_polyline` and
+  `write_3d_polyline` expect the owner, and `polyline_children_take_its_layer` checks the layer. It fails on the
+  unpatched release.
 
 The tests `as_datetime_conversion_test` and `as_double_conversion_test` fail on the unpatched release too.
 

@@ -1576,7 +1576,7 @@ impl Entity {
                     a.add_code_pairs(pairs, version, write_handles);
                 }
                 if !ins.__attributes_and_handles.is_empty() {
-                    Entity::add_code_pairs_seqend(pairs, &ins.__seqend_handle, write_handles);
+                    self.add_code_pairs_seqend(pairs, ins.__seqend_handle, version, write_handles);
                 }
             }
             EntityType::Polyline(ref poly) => {
@@ -1590,16 +1590,15 @@ impl Entity {
                     {
                         v.set_is_3d_polygon_mesh(poly.is_3d_polygon_mesh());
                     }
+                    // ncz-rs patch: vertices take the layer and space of their polyline, and it owns them. They
+                    // were written on layer `0` without an owner.
                     let v = Entity {
-                        common: EntityCommon {
-                            handle: *vertex_handle,
-                            ..Default::default()
-                        },
+                        common: self.child_common(*vertex_handle),
                         specific: EntityType::Vertex(v),
                     };
                     v.add_code_pairs(pairs, version, write_handles);
                 }
-                Entity::add_code_pairs_seqend(pairs, &poly.__seqend_handle, write_handles);
+                self.add_code_pairs_seqend(pairs, poly.__seqend_handle, version, write_handles);
             }
             _ => (),
         }
@@ -1624,11 +1623,31 @@ impl Entity {
         };
         m_text.add_code_pairs(pairs, version, write_handles);
     }
-    fn add_code_pairs_seqend(pairs: &mut Vec<CodePair>, handle: &Handle, write_handles: bool) {
-        pairs.push(CodePair::new_str(0, "SEQEND"));
-        if write_handles {
-            pairs.push(CodePair::new_string(5, &handle.as_string()));
+    /// ncz-rs patch: the common values of a vertex or `SEQEND` of this entity, which share its layer and space and
+    /// are owned by it.
+    fn child_common(&self, handle: Handle) -> EntityCommon {
+        EntityCommon {
+            handle,
+            __owner_handle: self.common.handle,
+            is_in_paper_space: self.common.is_in_paper_space,
+            layer: self.common.layer.clone(),
+            ..Default::default()
         }
+    }
+    /// ncz-rs patch: the `SEQEND` is written with the common values of an entity, its layer and owner among them. It
+    /// was written with only its handle, which put it on layer `0`.
+    fn add_code_pairs_seqend(
+        &self,
+        pairs: &mut Vec<CodePair>,
+        handle: Handle,
+        version: AcadVersion,
+        write_handles: bool,
+    ) {
+        let seqend = Entity {
+            common: self.child_common(handle),
+            specific: EntityType::Seqend(Seqend::default()),
+        };
+        seqend.add_code_pairs(pairs, version, write_handles);
     }
 }
 
@@ -2457,6 +2476,7 @@ mod tests {
                 CodePair::new_f64(30, 0.0),
                 CodePair::new_str(0, "VERTEX"), // vertex 1
                 CodePair::new_str(5, "10"),
+                CodePair::new_str(330, "13"), // ncz-rs patch: owned by the polyline
                 CodePair::new_str(100, "AcDbEntity"),
                 CodePair::new_str(8, "0"),
                 CodePair::new_str(100, "AcDbVertex"),
@@ -2468,6 +2488,7 @@ mod tests {
                 CodePair::new_f64(50, 0.0),
                 CodePair::new_str(0, "VERTEX"), // vertex 2
                 CodePair::new_str(5, "11"),
+                CodePair::new_str(330, "13"), // ncz-rs patch: owned by the polyline
                 CodePair::new_str(100, "AcDbEntity"),
                 CodePair::new_str(8, "0"),
                 CodePair::new_str(100, "AcDbVertex"),
@@ -2479,6 +2500,7 @@ mod tests {
                 CodePair::new_f64(50, 0.0),
                 CodePair::new_str(0, "VERTEX"), // vertex 3
                 CodePair::new_str(5, "12"),
+                CodePair::new_str(330, "13"), // ncz-rs patch: owned by the polyline
                 CodePair::new_str(100, "AcDbEntity"),
                 CodePair::new_str(8, "0"),
                 CodePair::new_str(100, "AcDbVertex"),
@@ -2525,6 +2547,7 @@ mod tests {
                 CodePair::new_i16(70, 8),       // 3d = true
                 CodePair::new_str(0, "VERTEX"), // vertex 1
                 CodePair::new_str(5, "10"),
+                CodePair::new_str(330, "11"), // ncz-rs patch: owned by the polyline
                 CodePair::new_str(100, "AcDbEntity"),
                 CodePair::new_str(8, "0"),
                 CodePair::new_str(100, "AcDbVertex"),
@@ -2533,6 +2556,38 @@ mod tests {
                 CodePair::new_f64(20, 2.1),
                 CodePair::new_f64(30, 3.1),
                 CodePair::new_i16(70, 32), // 3d = true
+            ],
+        );
+    }
+
+    #[test]
+    fn polyline_children_take_its_layer() {
+        // ncz-rs patch: vertices and the `SEQEND` were written on layer `0` without an owner.
+        let mut drawing = Drawing::new();
+        drawing.header.version = AcadVersion::R2000;
+        let mut poly = Polyline::default();
+        poly.add_vertex(&mut drawing, Vertex::default());
+        let mut entity = Entity::new(EntityType::Polyline(poly));
+        entity.common.layer = String::from("PARCELS");
+        drawing.add_entity(entity);
+        assert_contains_pairs(
+            &drawing,
+            vec![
+                CodePair::new_str(0, "VERTEX"),
+                CodePair::new_str(5, "10"),
+                CodePair::new_str(330, "11"),
+                CodePair::new_str(100, "AcDbEntity"),
+                CodePair::new_str(8, "PARCELS"),
+            ],
+        );
+        assert_contains_pairs(
+            &drawing,
+            vec![
+                CodePair::new_str(0, "SEQEND"),
+                CodePair::new_str(5, "12"),
+                CodePair::new_str(330, "11"),
+                CodePair::new_str(100, "AcDbEntity"),
+                CodePair::new_str(8, "PARCELS"),
             ],
         );
     }
