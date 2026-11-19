@@ -1,0 +1,11 @@
+# Symbol 144 of F3.NCS, recovered from NetCAD 5's DXF export of lines whose line type puts it
+# along them (523 instances, see target/recheck/scripts/patsym.py). The NCS file is not available.
+line -0.75 0 -0.75 0.1154
+line -0.75 0.1154 -0.6346 0.4038
+line -0.6346 0.4038 -0.4038 0.6346
+line -0.4038 0.6346 -0.1154 0.75
+line -0.1154 0.75 0.1154 0.75
+line 0.1154 0.75 0.4038 0.6346
+line 0.4038 0.6346 0.6346 0.4038
+line 0.6346 0.4038 0.75 0.1154
+line 0.75 0 0.75 0.1154

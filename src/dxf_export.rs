@@ -423,11 +423,13 @@ fn dxf_line_type(line_type: &LineType) -> Option<dxf::tables::LineType> {
     })
 }
 
-/// Symbol values of a line type pattern: `1000 + n` puts symbol `n` of the first library at the current place, turned
-/// along the line, and `-(1000 + n)` puts it turned by a further half turn. Symbols take no length. Other thousands
-/// digits (`-2128`, `-4128`, `-3180`, …) occur in the corpus but no NetCAD export shows their meaning, so those
-/// symbols are left out.
-const PATTERN_SYMBOLS: std::ops::Range<f64> = 1000.0..1256.0;
+/// Symbol values of a line type pattern: `k·1000 + n` puts symbol `n` of the first library at the current place, at
+/// `k` times its size, turned along the line, and `-(k·1000 + n)` puts it turned by a further half turn. Symbols take
+/// no length. The size factor matches NetCAD 5's export of `-2128`/`-4128`, `-2132`, `-2208` and `-4181` in the corpus.
+/// Values with `n` of 256 or more are left out.
+const PATTERN_SYMBOL_NUMBERS: u16 = 256;
+/// Size factors above this are taken as garbage, the corpus has up to 18.
+const MAX_PATTERN_SYMBOL_SIZE: f64 = 99.0;
 
 /// Repeats of a pattern along a single line beyond which its symbols are left out, so that a pattern of tiny lengths
 /// on a long line cannot flood the drawing.
@@ -442,6 +444,8 @@ enum PatternElement {
     Length(f64),
     Symbol {
         number: u16,
+        /// The factor of the symbol's size, `k` of `k·1000 + n`.
+        size: f64,
         turned: bool,
     },
 }
@@ -472,11 +476,16 @@ impl LinePattern {
             }
             if value.abs() < f64::from(SYMBOL_SEGMENT) {
                 elements.push(PatternElement::Length(value.abs()));
-            } else if value.fract() == 0.0 && PATTERN_SYMBOLS.contains(&value.abs()) {
-                elements.push(PatternElement::Symbol {
-                    number: (value.abs() - PATTERN_SYMBOLS.start) as u16,
-                    turned: value < 0.0,
-                });
+            } else if value.fract() == 0.0 {
+                let size = (value.abs() / 1000.0).floor();
+                let number = value.abs() - size * 1000.0;
+                if size <= MAX_PATTERN_SYMBOL_SIZE && number < f64::from(PATTERN_SYMBOL_NUMBERS) {
+                    elements.push(PatternElement::Symbol {
+                        number: number as u16,
+                        size,
+                        turned: value < 0.0,
+                    });
+                }
             }
         }
         let length: f64 = elements
@@ -511,9 +520,10 @@ impl LinePattern {
         })
     }
 
-    /// The symbols along a line of the given length, as the distance from its start, the symbol number and whether it
-    /// is turned. The pattern starts at the start of the line, with lengths multiplied by `scale`.
-    fn symbol_places(&self, scale: f64, length: f64) -> Vec<(f64, u16, bool)> {
+    /// The symbols along a line of the given length, as the distance from its start, the symbol number, its size
+    /// factor and whether it is turned. The pattern starts at the start of the line, with lengths multiplied by
+    /// `scale`.
+    fn symbol_places(&self, scale: f64, length: f64) -> Vec<(f64, u16, f64, bool)> {
         let repeat = self.length * scale;
         if repeat.is_nan() || repeat <= 0.0 || length / repeat > MAX_PATTERN_REPEATS {
             return vec![];
@@ -527,8 +537,12 @@ impl LinePattern {
             for element in &self.elements {
                 match *element {
                     PatternElement::Length(length) => along += length * scale,
-                    PatternElement::Symbol { number, turned } if along <= end => {
-                        places.push((along, number, turned));
+                    PatternElement::Symbol {
+                        number,
+                        size,
+                        turned,
+                    } if along <= end => {
+                        places.push((along, number, size, turned));
                     }
                     PatternElement::Symbol { .. } => {}
                 }
@@ -594,7 +608,7 @@ fn line_pattern_entities(
         let Some(pattern) = names.line_pattern(index) else {
             continue;
         };
-        for (along, number, turned) in pattern.symbol_places(scale, length) {
+        for (along, number, size, turned) in pattern.symbol_places(scale, length) {
             if library.is_none_or(|library| symbols::find(library, number).is_none()) {
                 continue;
             }
@@ -605,8 +619,8 @@ fn line_pattern_entities(
                     start.y + uy * along,
                     start.z + dz * along / length,
                 ),
-                x_scale_factor: scale,
-                y_scale_factor: scale,
+                x_scale_factor: scale * size,
+                y_scale_factor: scale * size,
                 rotation: if turned { angle + 180.0 } else { angle },
                 ..Default::default()
             };
@@ -1794,10 +1808,10 @@ mod tests {
         assert_eq!(pattern.parallel, None);
         assert_eq!(
             pattern.symbol_places(1.0, 17.285),
-            [(5.0, 144, false), (15.0, 144, false)]
+            [(5.0, 144, 1.0, false), (15.0, 144, 1.0, false)]
         );
         // The pattern scales with the map scale.
-        assert_eq!(pattern.symbol_places(2.0, 17.285), [(10.0, 144, false)]);
+        assert_eq!(pattern.symbol_places(2.0, 17.285), [(10.0, 144, 1.0, false)]);
     }
 
     #[test]
@@ -1807,7 +1821,11 @@ mod tests {
         assert_eq!(pattern.parallel, Some((1.0, 64)));
         assert_eq!(
             pattern.symbol_places(1.0, 14.0),
-            [(0.0, 140, false), (7.0, 140, false), (14.0, 140, false)]
+            [
+                (0.0, 140, 1.0, false),
+                (7.0, 140, 1.0, false),
+                (14.0, 140, 1.0, false)
+            ]
         );
     }
 
@@ -1822,17 +1840,28 @@ mod tests {
         .unwrap();
         assert_eq!(
             pattern.symbol_places(1.0, 15.0),
-            [(3.5, 140, true), (10.5, 140, true)]
+            [(3.5, 140, 1.0, true), (10.5, 140, 1.0, true)]
+        );
+    }
+
+    #[test]
+    fn sizes_symbols_by_the_thousands_digit() {
+        // ŞEV-1 as NetCAD exports it: symbol 128 at twice and at four times its size, turned.
+        let pattern =
+            LinePattern::new(&line_type(5, 0.0, 0, &[2.0, -2128.0, 2.5, -4128.0, 0.5])).unwrap();
+        assert_eq!(
+            pattern.symbol_places(1.0, 5.0),
+            [(2.0, 128, 2.0, true), (4.5, 128, 4.0, true)]
+        );
+        // Symbol numbers beyond a library's 256 are left out.
+        assert_eq!(
+            LinePattern::new(&line_type(3, 0.0, 0, &[2.0, 1300.0, 2.0])),
+            None
         );
     }
 
     #[test]
     fn leaves_out_unknown_symbols_and_plain_patterns() {
-        // Thousands digits other than 1 have no known meaning.
-        assert_eq!(
-            LinePattern::new(&line_type(5, 0.0, 0, &[2.0, -2128.0, 2.5, -4128.0, 0.5])),
-            None
-        );
         assert_eq!(LinePattern::new(&line_type(2, 0.0, 0, &[2.0, -1.0])), None);
         // Symbols without any length would all be at the start.
         assert_eq!(LinePattern::new(&line_type(1, 0.0, 0, &[1140.0])), None);
