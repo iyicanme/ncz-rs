@@ -387,6 +387,87 @@ fn text_justification(
     }
 }
 
+/// Advance widths of NetCAD's stroke font `ARIAL.NCF`, in 24ths of the text height, fitted to where NetCAD 5's DXF
+/// export puts the alignment point of about 200,000 centred and right-aligned texts of the corpus (within 0.01 of the
+/// height for 99% of them). Characters that are not listed take [`ARIAL_DEFAULT_WIDTH`].
+#[rustfmt::skip]
+const ARIAL_WIDTHS: &[(char, u8)] = &[
+    (' ', 16), ('\'', 6), ('(', 11), (')', 11), ('+', 20), (',', 9), ('-', 11), ('.', 9), ('/', 9), ('0', 19),
+    ('1', 19), ('2', 19), ('3', 19), ('4', 19), ('5', 19), ('6', 19), ('7', 19), ('8', 19), ('9', 19), (':', 9),
+    ('=', 20), ('?', 19), ('A', 22), ('B', 22), ('C', 24), ('D', 24), ('E', 22), ('F', 21), ('G', 26), ('H', 24),
+    ('I', 9), ('J', 17), ('K', 22), ('L', 19), ('M', 28), ('N', 24), ('O', 26), ('P', 22), ('R', 24), ('S', 22),
+    ('T', 20), ('U', 24), ('V', 22), ('W', 33), ('X', 22), ('Y', 22), ('Z', 21), ('\\', 9), ('^', 13), ('_', 19),
+    ('a', 18), ('b', 18), ('c', 17), ('d', 18), ('e', 18), ('f', 10), ('g', 18), ('h', 19), ('i', 7), ('j', 7),
+    ('k', 17), ('l', 7), ('m', 28), ('n', 19), ('o', 18), ('p', 18), ('r', 11), ('s', 17), ('t', 9), ('u', 19),
+    ('v', 16), ('y', 16), ('z', 16), ('²', 11), ('Ç', 24), ('Ö', 26), ('Ü', 24), ('ç', 17), ('ö', 18), ('ü', 19),
+    ('Ğ', 26), ('ğ', 18), ('İ', 9), ('ı', 9), ('Ş', 22), ('ş', 17),
+];
+const ARIAL_DEFAULT_WIDTH: u8 = 19;
+/// Advance widths of `F1.NCF`, fitted like [`ARIAL_WIDTHS`] to about 19,000 texts. It is nearly monospaced.
+#[rustfmt::skip]
+const F1_WIDTHS: &[(char, u8)] = &[
+    (' ', 16), ('(', 13), (')', 13), ('+', 21), (',', 9), ('-', 10), ('.', 6), ('/', 21), ('0', 21), ('1', 21),
+    ('2', 21), ('3', 21), ('4', 21), ('5', 21), ('6', 21), ('7', 21), ('8', 21), ('9', 21), ('?', 17), ('A', 21),
+    ('B', 21), ('C', 21), ('D', 21), ('E', 21), ('F', 21), ('G', 21), ('H', 21), ('I', 13), ('K', 21), ('L', 21),
+    ('M', 21), ('N', 21), ('O', 21), ('P', 21), ('R', 21), ('S', 21), ('T', 21), ('U', 21), ('V', 21), ('W', 21),
+    ('X', 21), ('Y', 21), ('Z', 21), ('a', 21), ('b', 21), ('c', 21), ('d', 21), ('e', 21), ('f', 21), ('g', 21),
+    ('h', 21), ('i', 9), ('j', 17), ('k', 21), ('l', 9), ('m', 21), ('n', 17), ('o', 21), ('p', 21), ('r', 21),
+    ('s', 21), ('t', 21), ('u', 18), ('v', 21), ('y', 21), ('z', 21), ('Ç', 21), ('Ö', 21), ('Ü', 21), ('ç', 21),
+    ('ö', 21), ('ü', 18), ('Ğ', 21), ('ğ', 21), ('İ', 11), ('ı', 5), ('Ş', 21), ('ş', 21),
+];
+const F1_DEFAULT_WIDTH: u8 = 21;
+
+/// The width of a text as NetCAD measures it, in text heights. The style is the text style the font became (`F1` for
+/// `F1.NCF`); fonts other than `F1` are measured as `ARIAL`, which nearly all corpus texts use. A positive `spacing`
+/// scales the advance, 0 means 1.
+fn text_width(style: Option<&str>, text: &str, spacing: f32) -> f64 {
+    let (widths, default) = match style {
+        Some(style) if style.eq_ignore_ascii_case("F1") => (F1_WIDTHS, F1_DEFAULT_WIDTH),
+        _ => (ARIAL_WIDTHS, ARIAL_DEFAULT_WIDTH),
+    };
+    let units: u32 = text
+        .chars()
+        .map(|c| {
+            let width = widths
+                .iter()
+                .find(|&&(known, _)| known == c)
+                .map_or(default, |&(_, width)| width);
+            u32::from(width)
+        })
+        .sum();
+    let spacing = if spacing.is_finite() && spacing > 0.0 {
+        f64::from(spacing)
+    } else {
+        1.0
+    };
+    f64::from(units) / 24.0 * spacing
+}
+
+/// Where NetCAD 5 puts a text's alignment point (group 11) and group 10, relative to the stored point, by alignment
+/// code: group 11 is `a·width + b·height` along the baseline and `c·height` across it (to the left), group 10 is
+/// `d·height` along and `e·height` across. The stored point is the lower-left corner of the text for most codes; `P`,
+/// `Q` and `U` put the text half a height beside or above it. Matches 99.96% of 238,000 corpus texts to 0.02 of the
+/// height (`target/recheck/scripts/placemodel.py`).
+fn text_offsets(snap: char) -> [f64; 5] {
+    match snap {
+        '7' => [0.5, 0.0, -0.5, 0.0, 0.0],
+        '8' => [1.0, 0.0, -0.5, 0.0, 0.0],
+        'C' => [0.5, 0.0, 0.0, 0.0, 0.0],
+        'R' => [1.0, 0.0, 0.0, 0.0, 0.0],
+        '1' => [0.0, 0.0, 0.5, 0.0, 0.0],
+        'M' => [0.5, 0.0, 0.5, 0.0, 0.0],
+        '5' => [1.0, 0.0, 0.5, 0.0, 0.0],
+        '2' => [0.0, 0.0, 1.0, 0.0, 0.0],
+        '3' => [0.5, 0.0, 1.0, 0.0, 0.0],
+        '4' => [1.0, 0.0, 1.0, 0.0, 0.0],
+        'P' => [0.0, -0.5, 0.5, 0.5, 0.0],
+        'Q' => [1.0, 0.5, 0.5, -0.5, 0.0],
+        'U' => [0.5, 0.0, 1.5, 0.0, -1.5],
+        // 'L', '6' and the rest are left baseline at the stored point.
+        _ => [0.0; 5],
+    }
+}
+
 /// Whether the name can be used for a DXF table entry, such as a line type or a text style.
 fn is_valid_table_name(name: &str) -> bool {
     !name.is_empty()
@@ -830,12 +911,28 @@ fn entity_types(
             snap,
             italic,
             underline,
+            spacing,
+            font,
             ..
         } => {
             let (horizontal_text_justification, vertical_text_justification) =
                 text_justification(snap);
+            // NetCAD's alignment point, see `text_offsets`, which CAD programs place the text by.
+            let style = names.text_styles.get(usize::from(font)).cloned().flatten();
+            let height = f64::from(size);
+            let width = text_width(style.as_deref(), &string, spacing) * height;
+            let [a, b, c, d, e] = text_offsets(snap);
+            let (cos, sin) = (f64::from(tilt).cos(), f64::from(tilt).sin());
+            let stored: dxf::Point = position.into();
+            let at = |along: f64, across: f64| {
+                dxf::Point::new(
+                    stored.x + along * cos - across * sin,
+                    stored.y + along * sin + across * cos,
+                    stored.z,
+                )
+            };
             let text = dxf::entities::Text {
-                location: position.into(),
+                location: at(d * height, e * height),
                 text_height: size.into(),
                 value: if underline {
                     format!("%%u{string}")
@@ -846,7 +943,7 @@ fn entity_types(
                 oblique_angle: if italic { ITALIC_OBLIQUE_ANGLE } else { 0.0 },
                 relative_x_scale_factor: 1.0,
                 // Every justification but the default one positions the text at this point.
-                second_alignment_point: position.into(),
+                second_alignment_point: at(a * width + b * height, c * height),
                 horizontal_text_justification,
                 vertical_text_justification,
                 ..Default::default()
@@ -1740,6 +1837,33 @@ mod tests {
         assert_eq!(elevation(-1.2e34), 0.0);
         assert_eq!(elevation(f64::NAN), 0.0);
         assert_eq!(elevation(3.19e-27), 0.0);
+    }
+
+    #[test]
+    fn measures_text_like_netcad() {
+        // `ALİ OĞLU` is 161/24 heights wide in ARIAL.NCF.
+        assert!((text_width(Some("ARIAL"), "ALİ OĞLU", 0.0) - 161.0 / 24.0).abs() < 1e-12);
+        assert!((text_width(None, "26", 1.0) - 38.0 / 24.0).abs() < 1e-12);
+        assert!((text_width(Some("F1"), "11", 0.0) - 42.0 / 24.0).abs() < 1e-12);
+        // Spacing scales the advance; unknown characters take the default.
+        assert!((text_width(Some("ARIAL"), "\u{2603}", 1.2) - 19.0 / 24.0 * 1.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn places_text_at_netcads_alignment_point() {
+        // abakolu_itrf96_20112009_kesin: `ALİ OĞLU`, snap `M`, height 3, rotation 323.13°, stored at
+        // (509327.391, 4581553.912); NetCAD 5 writes group 11 (509336.341, 4581549.074).
+        let [a, b, c, d, e] = text_offsets('M');
+        let (height, tilt) = (3.0, 323.13_f64.to_radians());
+        let width = text_width(Some("ARIAL"), "ALİ OĞLU", 0.0) * height;
+        let (along, across) = (a * width + b * height, c * height);
+        let x = 509327.391 + along * tilt.cos() - across * tilt.sin();
+        let y = 4581553.912 + along * tilt.sin() + across * tilt.cos();
+        assert!((x - 509336.341).abs() < 0.01 && (y - 4581549.074).abs() < 0.01, "{x} {y}");
+        assert_eq!((d, e), (0.0, 0.0));
+        // `U` puts the text above the point, with group 10 below it, as NetCAD does.
+        assert_eq!(text_offsets('U'), [0.5, 0.0, 1.5, 0.0, -1.5]);
+        assert_eq!(text_offsets('L'), [0.0; 5]);
     }
 
     #[test]
