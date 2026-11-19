@@ -10,8 +10,12 @@ const LAYERS_HEADER_LENGTH: usize = 9;
 /// Bit of [`Layer::flags`] that is set when the layer is shown. NetCAD exports layers without it as off.
 pub const LAYER_VISIBLE: u32 = 0x01;
 /// Bit of [`Layer::flags`] that is set when NetCAD draws a marker, a small circle with a dot, at each point of the
-/// layer. It matches the layers of all 15,000 points in the four sample drawings that NetCAD exported.
+/// layer, if the file draws these markers at all, see [`POINT_MARKERS_SWITCH`].
 pub const LAYER_POINT_MARKERS: u32 = 0x100;
+/// Index of the byte of the layer table header (`unknown1` of [`Object::Layers`]) that is 1 when NetCAD draws the
+/// markers of layers with [`LAYER_POINT_MARKERS`], and 0 when it draws none. It decides on all 143 files of the corpus
+/// with such layers and a NetCAD 5 DXF export: 117 with markers on every such point, 26 with none.
+pub const POINT_MARKERS_SWITCH: usize = 5;
 const RASTER_REFERENCE_LENGTH: usize = 181;
 const LAYER_STYLES_HEADER_LENGTH: usize = 63;
 const LAYER_STYLE_LENGTH: usize = 256;

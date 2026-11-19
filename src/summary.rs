@@ -37,6 +37,10 @@ pub struct DxfSummary {
     pub blocks: usize,
     /// Number of geometries of each kind that have no DXF counterpart.
     pub skipped: BTreeMap<&'static str, usize>,
+    /// Symbols whose shape is not known, drawn as a rectangle, by symbol (e.g. `F3 139`): the number of geometries.
+    pub unknown_symbols: BTreeMap<String, usize>,
+    /// Symbols of line type patterns whose shape is not known, left out, by symbol: the number of lines.
+    pub dropped_pattern_symbols: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -135,6 +139,8 @@ pub fn convert(
             line_types: contents.line_types,
             blocks: contents.blocks,
             skipped,
+            unknown_symbols: contents.unknown_symbols,
+            dropped_pattern_symbols: contents.dropped_pattern_symbols,
         },
     })
 }

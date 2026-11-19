@@ -153,7 +153,20 @@ function showSummary(file, { file: ncz, dxf }) {
     ["Blocks", dxf.blocks.toLocaleString()],
     ["Not converted", skippedCount === 0 ? "nothing" :
       `${skippedCount.toLocaleString()} (${Object.entries(dxf.skipped).map(([kind, count]) => `${kind.toLowerCase()} ${count.toLocaleString()}`).join(", ")})`],
+    ["Unknown symbols", symbolList("drawn as rectangles", dxf.unknown_symbols, "")],
+    ["Unknown line symbols", symbolList("left out", dxf.dropped_pattern_symbols, " lines")],
   ]);
+}
+
+// Symbols whose shape is not known, e.g. "left out: F3 136 (1,234 lines), F3 139 (12 lines)", most frequent first,
+// or null when there are none.
+function symbolList(what, counts, unit) {
+  const entries = Object.entries(counts ?? {});
+  if (entries.length === 0) return null;
+  return `${what}: ` + entries
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, count]) => `${name} (${count.toLocaleString()}${unit})`)
+    .join(", ");
 }
 
 // Fills a <dl> with [term, value] rows, skipping missing values. Rows from byCount are indented.

@@ -2,7 +2,7 @@ use crate::coordinate::Coordinate;
 use crate::geometry::{Geometry, Header, POLYLINE_CLOSED, POLYLINE_CURVE, POLYLINE_SMOOTH_CURVE};
 use crate::line_type::LineType;
 use crate::colors::{DEFAULT_PALETTE, dxf_color};
-use crate::object::{LAYER_POINT_MARKERS, LAYER_VISIBLE, MetadataContent, Object};
+use crate::object::{LAYER_POINT_MARKERS, LAYER_VISIBLE, MetadataContent, Object, POINT_MARKERS_SWITCH};
 use crate::symbols::{self, Shape};
 use crate::{ObjectReader, ParseFailure};
 use dxf::stream_writer::handles_needed;
@@ -359,8 +359,9 @@ fn symbol_footprint_block(
     }
 }
 
-/// Maps an alignment code to a DXF justification, as NetCAD 5 exports it (4,082 texts). The digits do not follow the
-/// numeric keypad layout. Codes that NetCAD's export never showed (`P`, `U`, `Q`, …) fall back to centre middle.
+/// Maps an alignment code to a DXF justification, as NetCAD 5 exports it (about 320,000 texts of the corpus). The
+/// digits do not follow the numeric keypad layout. Other codes (`A`, `E`, `H`, `O`, NUL in the corpus) are left
+/// baseline, as NetCAD exports them.
 fn text_justification(
     snap: char,
 ) -> (
@@ -371,17 +372,18 @@ fn text_justification(
     use dxf::enums::VerticalTextJustification as V;
 
     match snap {
-        'L' | '6' => (H::Left, V::Baseline),
         '7' => (H::Center, V::Baseline),
+        '8' => (H::Right, V::Baseline),
         'C' => (H::Center, V::Bottom),
         'R' => (H::Right, V::Bottom),
-        '1' => (H::Left, V::Middle),
+        '1' | 'P' => (H::Left, V::Middle),
         'M' => (H::Center, V::Middle),
-        '5' => (H::Right, V::Middle),
+        '5' | 'Q' => (H::Right, V::Middle),
         '2' => (H::Left, V::Top),
-        '3' => (H::Center, V::Top),
+        '3' | 'U' => (H::Center, V::Top),
         '4' => (H::Right, V::Top),
-        _ => (H::Center, V::Middle),
+        // 'L', '6' and the rest.
+        _ => (H::Left, V::Baseline),
     }
 }
 
@@ -631,15 +633,17 @@ enum PointMarker {
 }
 
 impl PointMarker {
-    /// The marker of a point with the name on a layer that has, or has not, [`LAYER_POINT_MARKERS`]. Other points
-    /// get none. The layer decides first: traverse point `P.35` on such a layer gets the circle with a dot.
+    /// The marker of a point with the name on a layer whose points get markers, or not, see
+    /// [`LAYER_POINT_MARKERS`]. Other points get none. The name decides first: in the corpus, 841 traverse points
+    /// on such layers get only the traverse circle, and triangulation points only the triangle, whether the layer
+    /// and file draw markers or not.
     fn of(name: &str, marked_layer: bool) -> Option<Self> {
-        if marked_layer {
-            Some(Self::Circle)
-        } else if name.starts_with("P.") {
+        if name.starts_with("P.") {
             Some(Self::Traverse)
         } else if name.starts_with("N.") {
             Some(Self::Triangulation)
+        } else if marked_layer {
+            Some(Self::Circle)
         } else {
             None
         }
@@ -682,6 +686,11 @@ impl PointMarker {
             Self::Triangulation => TRIANGULATION,
         }
     }
+}
+
+/// Whether the file draws the markers of layers with [`LAYER_POINT_MARKERS`], from the layer table header.
+fn point_markers_on(header: &[u8]) -> bool {
+    header.get(POINT_MARKERS_SWITCH) == Some(&1)
 }
 
 /// The marker of a point geometry, see [`PointMarker`].
@@ -951,7 +960,8 @@ struct Names {
     line_patterns: Vec<Option<LinePattern>>,
     /// The map scale, which scales line type patterns.
     scale: Option<f64>,
-    /// Whether NetCAD draws a marker at the points of the layer, by layer index, see [`LAYER_POINT_MARKERS`].
+    /// Whether NetCAD draws a marker at the points of the layer, by layer index, see [`LAYER_POINT_MARKERS`] and
+    /// [`POINT_MARKERS_SWITCH`].
     point_markers: Vec<bool>,
     /// NetCAD palette numbers of the layers, by layer index.
     layer_colors: Vec<u8>,
@@ -1023,7 +1033,10 @@ impl Names {
     /// Adds the entries of a table object to the drawing and records their names.
     fn add(&mut self, drawing: &mut dxf::Drawing, object: &Object) {
         match object {
-            Object::Layers { layers, .. } => {
+            Object::Layers {
+                unknown1, layers, ..
+            } => {
+                let markers_on = point_markers_on(unknown1);
                 for layer in layers {
                     let exists = drawing.layers().any(|l| l.name == layer.name);
                     if !layer.name.is_empty() && !exists {
@@ -1040,7 +1053,7 @@ impl Names {
                     self.layers.push(layer.name.clone());
                     self.layer_colors.push(layer.color);
                     self.point_markers
-                        .push(layer.flags & LAYER_POINT_MARKERS != 0);
+                        .push(markers_on && layer.flags & LAYER_POINT_MARKERS != 0);
                 }
             }
             Object::LineTypes { types } => {
@@ -1099,7 +1112,10 @@ impl Names {
     /// Records the names of a table object whose entries [`Names::add`] already added, giving the same names.
     fn find(&mut self, drawing: &dxf::Drawing, object: &Object) {
         match object {
-            Object::Layers { layers, .. } => {
+            Object::Layers {
+                unknown1, layers, ..
+            } => {
+                let markers_on = point_markers_on(unknown1);
                 self.layers
                     .extend(layers.iter().map(|layer| layer.name.clone()));
                 self.layer_colors
@@ -1107,7 +1123,7 @@ impl Names {
                 self.point_markers.extend(
                     layers
                         .iter()
-                        .map(|layer| layer.flags & LAYER_POINT_MARKERS != 0),
+                        .map(|layer| markers_on && layer.flags & LAYER_POINT_MARKERS != 0),
                 );
             }
             Object::LineTypes { types } => {
@@ -1404,6 +1420,18 @@ pub struct DxfContents {
     pub layers: usize,
     pub line_types: usize,
     pub blocks: usize,
+    /// Symbols whose shape is not known, drawn as a rectangle, by symbol (e.g. `F3 139`): the number of geometries.
+    pub unknown_symbols: BTreeMap<String, usize>,
+    /// Symbols of line type patterns whose shape is not known, left out, by symbol: the number of lines.
+    pub dropped_pattern_symbols: BTreeMap<String, usize>,
+}
+
+/// A symbol as the summary names it, e.g. `F3 139`, or `139` when its library is not known.
+fn symbol_label(library: Option<&str>, symbol: u16) -> String {
+    match library {
+        Some(library) => format!("{library} {symbol}"),
+        None => symbol.to_string(),
+    }
 }
 
 /// Converts an NCZ file to DXF and writes it. Everything but the entities of the model space is made in a first
@@ -1501,6 +1529,12 @@ pub fn write_dxf(
                         f64::from(*rotation),
                     );
                     let library = names.library(*library);
+                    if library.is_none_or(|library| symbols::find(library, *symbol).is_none()) {
+                        *contents
+                            .unknown_symbols
+                            .entry(symbol_label(library, *symbol))
+                            .or_default() += 1;
+                    }
                     let (_, _, footprint) = symbols_in_use
                         .entry(symbol_block_name(library, *symbol))
                         .or_insert_with(|| (library.map(str::to_owned), *symbol, None));
@@ -1513,18 +1547,27 @@ pub fn write_dxf(
 
                 point_markers.extend(point_marker(&names, &geometry));
 
-                if let Geometry::Line { header, .. } = &geometry
-                    && let Some(library) = names.library(0)
-                {
+                if let Geometry::Line { header, .. } = &geometry {
+                    let library = names.library(0);
                     let chain = line_type_chain(&names, usize::from(header.line_type));
-                    let patterns = chain
+                    let symbols: BTreeSet<u16> = chain
                         .iter()
-                        .filter_map(|&(_, index)| names.line_pattern(index));
-                    for symbol in patterns.flat_map(LinePattern::symbols) {
-                        if symbols::find(library, symbol).is_some() {
-                            symbols_in_use
-                                .entry(symbol_block_name(Some(library), symbol))
-                                .or_insert_with(|| (Some(library.to_owned()), symbol, None));
+                        .filter_map(|&(_, index)| names.line_pattern(index))
+                        .flat_map(LinePattern::symbols)
+                        .collect();
+                    for symbol in symbols {
+                        match library {
+                            Some(library) if symbols::find(library, symbol).is_some() => {
+                                symbols_in_use
+                                    .entry(symbol_block_name(Some(library), symbol))
+                                    .or_insert_with(|| (Some(library.to_owned()), symbol, None));
+                            }
+                            _ => {
+                                *contents
+                                    .dropped_pattern_symbols
+                                    .entry(symbol_label(library, symbol))
+                                    .or_default() += 1;
+                            }
                         }
                     }
                 }
@@ -1686,10 +1729,31 @@ mod tests {
     }
 
     #[test]
+    fn maps_text_alignments() {
+        use dxf::enums::HorizontalTextJustification as H;
+        use dxf::enums::VerticalTextJustification as V;
+        // As NetCAD 5 exports them.
+        assert_eq!(text_justification('M'), (H::Center, V::Middle));
+        assert_eq!(text_justification('P'), (H::Left, V::Middle));
+        assert_eq!(text_justification('Q'), (H::Right, V::Middle));
+        assert_eq!(text_justification('U'), (H::Center, V::Top));
+        assert_eq!(text_justification('8'), (H::Right, V::Baseline));
+        assert_eq!(text_justification('L'), (H::Left, V::Baseline));
+        assert_eq!(text_justification('\0'), (H::Left, V::Baseline));
+    }
+
+    #[test]
     fn picks_point_markers() {
-        // As NetCAD 5 drew them in the sample drawings.
+        // As NetCAD 5 drew them in the corpus.
+        assert!(point_markers_on(&[0, 0, 0, 0, 1, 1, 0, 1, 0]));
+        assert!(!point_markers_on(&[0, 0, 0, 0, 1, 0, 0, 1, 0]));
+        assert!(!point_markers_on(&[]));
         assert_eq!(PointMarker::of("118/1", true), Some(PointMarker::Circle));
-        assert_eq!(PointMarker::of("P.35", true), Some(PointMarker::Circle));
+        assert_eq!(PointMarker::of("P.35", true), Some(PointMarker::Traverse));
+        assert_eq!(
+            PointMarker::of("N.F2930181", true),
+            Some(PointMarker::Triangulation)
+        );
         assert_eq!(PointMarker::of("P.20", false), Some(PointMarker::Traverse));
         assert_eq!(
             PointMarker::of("N.F2930203", false),

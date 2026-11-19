@@ -86,11 +86,40 @@ fn main() {
             );
         }
     })
-    .and_then(|_| Ok(writer.flush()?));
+    .and_then(|contents| {
+        writer.flush()?;
+        Ok(contents)
+    });
 
-    if let Err(error) = result {
-        // A half written DXF is of no use.
-        let _ = std::fs::remove_file(&options.output);
-        exit(format!("{input}: {error}"), 1);
+    let contents = match result {
+        Ok(contents) => contents,
+        Err(error) => {
+            // A half written DXF is of no use.
+            let _ = std::fs::remove_file(&options.output);
+            exit(format!("{input}: {error}"), 1);
+        }
+    };
+    if !contents.unknown_symbols.is_empty() {
+        eprintln!(
+            "warning: symbols of unknown shape, drawn as rectangles: {}",
+            counts(&contents.unknown_symbols, "")
+        );
     }
+    if !contents.dropped_pattern_symbols.is_empty() {
+        eprintln!(
+            "warning: line type symbols of unknown shape, left out: {}",
+            counts(&contents.dropped_pattern_symbols, " lines")
+        );
+    }
+}
+
+/// `F3 139 (12), F3 136 (4)`, most frequent first.
+fn counts(counts: &std::collections::BTreeMap<String, usize>, unit: &str) -> String {
+    let mut entries: Vec<_> = counts.iter().collect();
+    entries.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    entries
+        .iter()
+        .map(|(name, count)| format!("{name} ({count}{unit})"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
