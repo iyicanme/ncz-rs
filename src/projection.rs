@@ -70,6 +70,30 @@ impl TransverseMercator {
         })
     }
 
+    /// The `MPROJ` codes (projection, datum, central meridian) of this projection: projection 3 for a Turkish 3° zone,
+    /// 2 for UTM; datum 0 WGS 84, 1 TUREF, 4 ED50. `None` when it has no such codes.
+    pub fn mproj_codes(&self) -> Option<(u8, u8, u8)> {
+        let projection = if self.scale == 1.0 {
+            3
+        } else if self.scale == 0.9996 {
+            2
+        } else {
+            return None;
+        };
+        let datum = if self.ellipsoid == WGS84 {
+            0
+        } else if self.ellipsoid == GRS80 {
+            1
+        } else if self.ellipsoid == INTERNATIONAL_1924 {
+            4
+        } else {
+            return None;
+        };
+        let meridian = self.central_meridian;
+        (meridian.fract() == 0.0 && (0.0..=180.0).contains(&meridian))
+            .then(|| (projection, datum, meridian as u8))
+    }
+
     /// Projects a longitude and latitude in degrees to easting and northing in metres, with Krüger's series to the
     /// sixth order in the third flattening (Karney 2011), accurate to well under a millimetre within a zone.
     pub fn forward(&self, longitude: f64, latitude: f64) -> (f64, f64) {

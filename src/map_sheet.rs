@@ -58,6 +58,20 @@ pub fn projected_corners(
     bounds: [f64; 4],
     tolerance: f64,
 ) -> Option<[(f64, f64); 4]> {
+    let projection = fitting_projection(name, mproj, bounds, tolerance)?;
+    let corners = geographic_corners(name)?;
+    Some(corners.map(|(longitude, latitude)| projection.forward(longitude, latitude)))
+}
+
+/// The coordinate system that places the sheet with the name at `bounds`, see [`projected_corners`]: `mproj` when it
+/// fits, or else the first Turkish 3° zone that does, on TUREF, ED50 or WGS 84 in that order. TUREF and WGS 84 differ
+/// by far less than `tolerance` at map scale, so a sheet that fits one fits both, and TUREF is taken.
+pub fn fitting_projection(
+    name: &str,
+    mproj: Option<TransverseMercator>,
+    bounds: [f64; 4],
+    tolerance: f64,
+) -> Option<TransverseMercator> {
     let corners = geographic_corners(name)?;
     let meridian = (corners[0].0 / 3.0).round() * 3.0;
     let candidates = mproj.into_iter().chain(
@@ -65,21 +79,17 @@ pub fn projected_corners(
             .into_iter()
             .map(|ellipsoid| TransverseMercator::turkish_zone(ellipsoid, meridian)),
     );
-    for projection in candidates {
+    candidates.into_iter().find(|projection| {
         let projected = corners.map(|(longitude, latitude)| projection.forward(longitude, latitude));
-        let fits = [
+        [
             projected.iter().map(|p| p.0).fold(f64::INFINITY, f64::min) - bounds[0],
             projected.iter().map(|p| p.1).fold(f64::INFINITY, f64::min) - bounds[1],
             projected.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max) - bounds[2],
             projected.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max) - bounds[3],
         ]
         .iter()
-        .all(|difference| difference.abs() <= tolerance);
-        if fits {
-            return Some(projected);
-        }
-    }
-    None
+        .all(|difference| difference.abs() <= tolerance)
+    })
 }
 
 #[cfg(test)]

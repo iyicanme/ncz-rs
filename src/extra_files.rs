@@ -1,8 +1,17 @@
 //! Files that go next to the DXF: the coordinate system as a `.prj` file, and the pictures and rich texts that
 //! NCZ files embed (type-15 objects), whose content a DXF frame cannot hold.
+//!
+//! The coordinate system is the one `MPROJ` names. When that gives none (no `MPROJ`, projection 0 or an unknown
+//! datum), the file's map sheets can still tell it: the system that places most sheets at their stored bounds, see
+//! [`map_sheet::fitting_projection`]. All 6 corpus files without a usable `MPROJ` that have sheets fit ED50 / TM33.
 
 use crate::geometry::Geometry;
+use crate::map_sheet;
 use crate::object::{MetadataContent, Object};
+use std::collections::BTreeMap;
+
+/// How far a sheet's projected corners may be from its stored bounds for its system to count, in drawing units.
+const SHEET_TOLERANCE: f64 = 0.01;
 
 /// A file to write next to the DXF, named by the DXF's name without extension followed by `suffix`.
 #[derive(Debug, serde::Serialize)]
@@ -18,6 +27,8 @@ pub struct ExtraFile {
 #[derive(Debug, Default)]
 pub struct ExtraFiles {
     prj: Option<String>,
+    /// How many map sheets each coordinate system places at their stored bounds, by `MPROJ` codes.
+    sheet_systems: BTreeMap<(u8, u8, u8), usize>,
     /// Embedded pictures, as their file extension and bytes.
     images: Vec<(&'static str, Vec<u8>)>,
     /// Embedded rich texts, as RTF.
@@ -37,6 +48,18 @@ impl ExtraFiles {
                     },
                 ..
             } => self.prj = prj(*projection, *datum, *central_meridian),
+            Object::Geometry {
+                geometry: Geometry::MapSheet { header, name },
+            } => {
+                // NCZ coordinates have northing as x.
+                let (lower, upper) = (header.lower_bound, header.upper_bound);
+                let bounds = [lower.y, lower.x, upper.y, upper.x];
+                if let Some(codes) = map_sheet::fitting_projection(name, None, bounds, SHEET_TOLERANCE)
+                    .and_then(|projection| projection.mproj_codes())
+                {
+                    *self.sheet_systems.entry(codes).or_default() += 1;
+                }
+            }
             Object::Geometry {
                 geometry: Geometry::Image { properties, .. },
             } => {
@@ -59,7 +82,23 @@ impl ExtraFiles {
         }
     }
 
+    /// The `MPROJ` codes of the coordinate system that the map sheets show, when `MPROJ` itself gives no `.prj`.
+    pub fn inferred_system(&self) -> Option<(u8, u8, u8)> {
+        if self.prj.is_some() {
+            return None;
+        }
+        self.sheet_systems
+            .iter()
+            .max_by_key(|&(_, count)| *count)
+            .map(|(&codes, _)| codes)
+    }
+
     pub fn into_files(self) -> Vec<ExtraFile> {
+        let inferred = self.inferred_system();
+        let prj = self.prj.or_else(|| {
+            let (projection, datum, central_meridian) = inferred?;
+            prj(projection, datum, central_meridian)
+        });
         let mut files = vec![];
         let mut add = |suffix: String, bytes: Vec<u8>| {
             files.push(ExtraFile {
@@ -68,7 +107,7 @@ impl ExtraFiles {
                 bytes,
             });
         };
-        if let Some(prj) = self.prj {
+        if let Some(prj) = prj {
             add(".prj".to_owned(), prj.into_bytes());
         }
         for (index, (extension, bytes)) in self.images.into_iter().enumerate() {
@@ -187,6 +226,81 @@ mod tests {
         assert_eq!(prj(0, 0, 0), None);
         assert_eq!(prj(3, 255, 33), None);
         assert_eq!(prj(2, 0, 34), None);
+    }
+
+    /// A map sheet record at the stored bounds that `projection` gives the sheet.
+    fn map_sheet(name: &str, projection: crate::projection::TransverseMercator) -> Object {
+        use crate::coordinate::Coordinate;
+        use crate::geometry::Header;
+        let corners = crate::map_sheet::geographic_corners(name).unwrap().map(|(lon, lat)| projection.forward(lon, lat));
+        let (east, north): (Vec<f64>, Vec<f64>) = corners.into_iter().unzip();
+        let min = |v: &[f64]| v.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = |v: &[f64]| v.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        // NCZ coordinates have northing as x.
+        let header = Header {
+            unknown1: 0,
+            layer_id: 0,
+            line_type: 0,
+            line_type2: 0,
+            color: 0,
+            attributes: vec![],
+            lower_bound: Coordinate { x: min(&north), y: min(&east), z: 0.0 },
+            upper_bound: Coordinate { x: max(&north), y: max(&east), z: 0.0 },
+            unknown2: 0,
+            code: None,
+            link: None,
+        };
+        Object::Geometry {
+            geometry: Geometry::MapSheet {
+                header,
+                name: name.to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    fn infers_the_coordinate_system_from_map_sheets() {
+        use crate::projection::{INTERNATIONAL_1924, TransverseMercator};
+        let ed50_tm33 = TransverseMercator::turkish_zone(INTERNATIONAL_1924, 33.0);
+
+        // No MPROJ: the sheets show ED50 / TM33, which becomes the .prj.
+        let mut extra = ExtraFiles::default();
+        extra.inspect(&map_sheet("F29-D-14-A-1", ed50_tm33));
+        extra.inspect(&map_sheet("F29-D-14-A-2", ed50_tm33));
+        assert_eq!(extra.inferred_system(), Some((3, 4, 33)));
+        let files = extra.into_files();
+        assert_eq!(files[0].suffix, ".prj");
+        assert_eq!(files[0].bytes, prj(3, 4, 33).unwrap().into_bytes());
+
+        // MPROJ wins when it names a system, whatever the sheets show.
+        let mut extra = ExtraFiles::default();
+        extra.inspect(&Object::Metadata {
+            name: "MPROJ".to_owned(),
+            content: MetadataContent::Projection {
+                projection: 3,
+                datum: 1,
+                unknown1: vec![],
+                central_meridian: 33,
+                unknown2: vec![],
+            },
+        });
+        extra.inspect(&map_sheet("F29-D-14-A-1", ed50_tm33));
+        assert_eq!(extra.inferred_system(), None);
+        assert_eq!(extra.into_files()[0].bytes, prj(3, 1, 33).unwrap().into_bytes());
+
+        // A sheet that no system places at its bounds tells nothing.
+        let mut sheet = map_sheet("F29-D-14-A-1", ed50_tm33);
+        if let Object::Geometry {
+            geometry: Geometry::MapSheet { header, .. },
+        } = &mut sheet
+        {
+            header.lower_bound.y += 5.0;
+            header.upper_bound.y += 5.0;
+        }
+        let mut extra = ExtraFiles::default();
+        extra.inspect(&sheet);
+        assert_eq!(extra.inferred_system(), None);
+        assert!(extra.into_files().is_empty());
     }
 
     #[test]

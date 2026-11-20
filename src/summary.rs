@@ -14,7 +14,8 @@ pub struct FileSummary {
     pub user: Option<String>,
     /// Map scale divided by 1000.
     pub scale: Option<f64>,
-    /// The coordinate system from the `MPROJ` entry, with its EPSG code when one is known.
+    /// The coordinate system from the `MPROJ` entry, with its EPSG code when one is known. Without one, the system the
+    /// map sheets show, marked as such (see [`crate::extra_files`]).
     pub coordinate_system: Option<String>,
     pub lower_bound: Option<Coordinate>,
     pub upper_bound: Option<Coordinate>,
@@ -134,6 +135,12 @@ pub fn convert(
         }
     })?;
     counting.flush()?;
+    if file.coordinate_system.is_none()
+        && let Some((projection, datum, central_meridian)) = extra_files.inferred_system()
+    {
+        file.coordinate_system = coordinate_system(projection, datum, central_meridian)
+            .map(|system| format!("{system}, from the map sheets"));
+    }
 
     Ok(Summary {
         file,
