@@ -549,6 +549,27 @@ struct LinePattern {
     /// which can chain on in turn. This matches every line of NetCAD's export of `DUVAR-1` (4 parallel lines), `DUV3`
     /// and `ISTINAT` in the sample pairs. A chain ends at a line type with a positive count, often `DUZ`.
     parallel: Option<(f64, usize)>,
+    /// A bridge line type (named `KOPRU…`), which NetCAD draws with a wing at each end, see [`BRIDGE_WING`].
+    bridge: bool,
+}
+
+/// The length of the wings that NetCAD draws at both ends of a line whose line type is a bridge (`KOPRU1` in the
+/// corpus, a plain solid type otherwise): from each end, at 45° outwards and to the left of the line's direction, in
+/// pattern units. All 24 ends of the 12 such lines in the corpus files with a NetCAD 5 export have them.
+const BRIDGE_WING: f64 = 2.0;
+
+/// Whether NetCAD draws the line type as a bridge: its name starts with `KOPRU` (Turkish for bridge, `KÖPRÜ`).
+fn is_bridge_line_type(name: &str) -> bool {
+    let folded: String = name
+        .trim()
+        .chars()
+        .map(|c| match c {
+            'Ö' | 'ö' => 'O',
+            'Ü' | 'ü' => 'U',
+            c => c.to_ascii_uppercase(),
+        })
+        .collect();
+    folded.starts_with("KOPRU")
 }
 
 impl LinePattern {
@@ -593,10 +614,12 @@ impl LinePattern {
         let has_symbols = elements
             .iter()
             .any(|element| matches!(element, PatternElement::Symbol { .. }));
-        (has_symbols || parallel.is_some()).then_some(Self {
+        let bridge = is_bridge_line_type(&line_type.name);
+        (has_symbols || parallel.is_some() || bridge).then_some(Self {
             elements,
             length,
             parallel,
+            bridge,
         })
     }
 
@@ -695,6 +718,19 @@ fn line_pattern_entities(
         let Some(pattern) = names.line_pattern(index) else {
             continue;
         };
+        if level == 0 && pattern.bridge {
+            // The left normal is `(-uy, ux)`; each wing goes outwards from its end, 45° to the left.
+            let wing = BRIDGE_WING * scale / std::f64::consts::SQRT_2;
+            for (at, outwards) in [(&begin, -1.0), (&end, 1.0)] {
+                let tip = dxf::Point::new(
+                    at.x + wing * (outwards * ux - uy),
+                    at.y + wing * (outwards * uy + ux),
+                    at.z,
+                );
+                let line = dxf::entities::Line::new(at.clone(), tip);
+                entities.push((dxf::entities::EntityType::Line(line), Some("CONTINUOUS".to_owned())));
+            }
+        }
         for (along, number, size, turned) in pattern.symbol_places(scale, length) {
             if library.is_none_or(|library| symbols::find(library, number).is_none()) {
                 continue;
@@ -1979,6 +2015,37 @@ mod tests {
             segments: segments.to_vec(),
             unknown2: vec![],
         }
+    }
+
+    #[test]
+    fn draws_bridge_wings() {
+        let mut bridge = line_type(1, 0.0, 0, &[5.0]);
+        bridge.name = "KOPRU1".to_owned();
+        assert!(LinePattern::new(&bridge).unwrap().bridge);
+        assert!(is_bridge_line_type("Köprü2"));
+        assert!(!is_bridge_line_type("DUZ"));
+
+        let mut names = Names::default();
+        names.line_types = vec![Some("KOPRU1".to_owned())];
+        names.line_patterns = vec![LinePattern::new(&bridge)];
+        // A bridge line of DOGANLAR_ITRF; NCZ coordinates have northing as x.
+        let begin = Coordinate { x: 4544671.759, y: 494261.498, z: 0.0 };
+        let end = Coordinate { x: 4544628.084, y: 494268.331, z: 0.0 };
+        let wings: Vec<(dxf::Point, dxf::Point)> = line_pattern_entities(&names, 0, begin, end)
+            .into_iter()
+            .filter_map(|(entity, _)| match entity {
+                dxf::entities::EntityType::Line(line) => Some((line.p1, line.p2)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(wings.len(), 2);
+        // NetCAD 5's wing at the start ends at (494262.677, 4544673.375).
+        let (from, tip) = &wings[0];
+        assert!((from.x - 494261.498).abs() < 1e-6 && (from.y - 4544671.759).abs() < 1e-6);
+        assert!((tip.x - 494262.677).abs() < 0.001 && (tip.y - 4544673.375).abs() < 0.001, "{tip:?}");
+        // The wing at the end is as long and also on the left.
+        let (from, tip) = &wings[1];
+        assert!(((tip.x - from.x).hypot(tip.y - from.y) - BRIDGE_WING).abs() < 1e-9);
     }
 
     #[test]
