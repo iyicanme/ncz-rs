@@ -3,6 +3,7 @@ use bopper::{BigEndianReadBuffer, ReadBuffer};
 
 pub mod colors;
 pub mod coordinate;
+pub mod extra_files;
 #[cfg(feature = "dxf")]
 pub mod dxf_export;
 pub mod geometry;

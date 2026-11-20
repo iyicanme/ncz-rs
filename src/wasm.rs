@@ -11,6 +11,11 @@ extern "C" {
     /// `chunk` is a view of the module's memory that is only valid during the call, so it must be copied.
     #[wasm_bindgen(method, catch)]
     fn write(this: &DxfSink, chunk: &[u8]) -> Result<(), JsValue>;
+
+    /// Receives a file to save next to the DXF (see [`crate::extra_files`]), named by the DXF's name without extension
+    /// followed by `suffix`. `bytes` is a view of the module's memory, like the chunks of [`DxfSink::write`].
+    #[wasm_bindgen(method, catch)]
+    fn file(this: &DxfSink, suffix: &str, bytes: &[u8]) -> Result<(), JsValue>;
 }
 
 /// Passes what is written to a [`DxfSink`] in pieces of [`CHUNK_SIZE`].
@@ -48,7 +53,7 @@ pub fn parse(bytes: &[u8]) -> Result<String, JsError> {
 }
 
 /// Converts an NCZ file to DXF, which is passed to `sink` in pieces so the whole file is never held in the module's
-/// memory. Returns JSON of [`crate::summary::Summary`].
+/// memory, followed by the files that go next to it. Returns JSON of [`crate::summary::Summary`].
 #[wasm_bindgen]
 pub fn convert(bytes: &[u8], sink: &DxfSink) -> Result<String, JsError> {
     let mut writer = SinkWriter {
@@ -57,6 +62,10 @@ pub fn convert(bytes: &[u8], sink: &DxfSink) -> Result<String, JsError> {
     };
     let summary = crate::summary::convert(bytes, &mut writer)
         .map_err(|error| JsError::new(&error.to_string()))?;
+    for extra in &summary.extra_files {
+        sink.file(&extra.suffix, &extra.bytes)
+            .map_err(|error| JsError::new(&format!("{error:?}")))?;
+    }
 
     Ok(serde_json::to_string(&summary)?)
 }

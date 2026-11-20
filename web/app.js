@@ -1,4 +1,5 @@
 import { loadConverter } from "./ncz.js";
+import { zip } from "./zip.js";
 
 const fileInput = document.getElementById("file-input");
 const dropZone = document.getElementById("drop-zone");
@@ -9,6 +10,8 @@ const fileInfo = document.getElementById("file-info");
 const contents = document.getElementById("contents");
 const dxfInfo = document.getElementById("dxf-info");
 const downloadDxf = document.getElementById("download-dxf");
+const extraDownloads = document.getElementById("extra-downloads");
+const downloadZip = document.getElementById("download-zip");
 const toggleDetails = document.getElementById("toggle-details");
 const details = document.getElementById("details");
 const detailInfo = document.getElementById("detail-info");
@@ -25,6 +28,8 @@ const converterReady = loadConverter();
 
 // The open file, kept so its details can be listed on demand.
 let currentFile = null;
+// The converted files, named, for the ZIP download.
+let outputFiles = [];
 let detailsLoaded = false;
 let elements = [];
 let activeKind = null;
@@ -49,6 +54,26 @@ dropZone.addEventListener("drop", (event) => {
 search.addEventListener("input", () => {
   visibleCount = PAGE_SIZE;
   renderRows();
+});
+
+downloadZip.addEventListener("click", async () => {
+  if (outputFiles.length === 0) return;
+  const zipName = outputFiles[0].name.replace(/\.[^.]*$/, ".zip");
+  downloadZip.disabled = true;
+  const previousStatus = status.textContent;
+  setStatus(`Packing ${zipName}…`);
+  try {
+    const url = URL.createObjectURL(await zip(outputFiles));
+    const link = el("a", { href: url, download: zipName });
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    setStatus(previousStatus);
+  } catch (error) {
+    console.error(error);
+    setStatus(`Could not pack ${zipName}: ${error.message}.`, true);
+  } finally {
+    downloadZip.disabled = false;
+  }
 });
 
 showMore.addEventListener("click", () => {
@@ -86,6 +111,10 @@ async function openFile(file) {
   currentFile = null;
   resetDetails();
   if (downloadDxf.href) URL.revokeObjectURL(downloadDxf.href);
+  for (const link of extraDownloads.querySelectorAll("a")) URL.revokeObjectURL(link.href);
+  extraDownloads.replaceChildren();
+  outputFiles = [];
+  downloadZip.hidden = true;
   dropText.textContent = file.name;
   setStatus(`Converting ${file.name}…`);
   // Let the status paint before the conversion blocks the page.
@@ -96,16 +125,25 @@ async function openFile(file) {
     const bytes = new Uint8Array(await file.arrayBuffer());
 
     const started = performance.now();
-    const { summary, dxf } = convert(bytes);
+    const { summary, dxf, extraFiles } = convert(bytes);
     const elapsed = performance.now() - started;
     if (!summary.file.version && Object.keys(summary.file.geometries).length === 0) {
       throw new Error("no NCZ data found");
     }
 
-    const dxfName = `${file.name.replace(/\.[^.]*$/, "")}.dxf`;
+    const stem = file.name.replace(/\.[^.]*$/, "");
+    const dxfName = `${stem}.dxf`;
     downloadDxf.href = URL.createObjectURL(dxf);
     downloadDxf.download = dxfName;
     downloadDxf.textContent = `Download ${dxfName}`;
+    outputFiles = [{ name: dxfName, blob: dxf }];
+    // The coordinate system (.prj) and embedded pictures and texts, which go next to the DXF.
+    for (const { suffix, blob } of extraFiles) {
+      const name = `${stem}${suffix}`;
+      outputFiles.push({ name, blob });
+      extraDownloads.append(el("a", { className: "button secondary-link", href: URL.createObjectURL(blob), download: name }, name));
+    }
+    downloadZip.hidden = extraFiles.length === 0;
 
     currentFile = { name: file.name, bytes };
     showSummary(file, summary);

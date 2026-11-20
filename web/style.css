@@ -90,7 +90,17 @@ dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 
 /* The download button on the right, the details button below it across the full width. */
 #actions { display: flex; flex-direction: column; gap: 16px; margin: 16px 0 24px; }
-#download-dxf { align-self: flex-end; }
+#download-dxf, #download-zip { align-self: flex-end; }
+/* The .prj and embedded pictures and texts, next to the DXF download. */
+#extra-downloads { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+#extra-downloads:empty { display: none; }
+.button.secondary-link {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 500;
+}
+.button.secondary-link:hover { filter: none; border-color: var(--muted); }
 
 .button {
   display: inline-block;

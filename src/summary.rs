@@ -2,6 +2,7 @@
 
 use crate::coordinate::Coordinate;
 use crate::dxf_export::{is_exported, write_dxf};
+use crate::extra_files::{ExtraFile, ExtraFiles};
 use crate::geometry::Geometry;
 use crate::object::{MetadataContent, Object};
 use std::collections::BTreeMap;
@@ -47,6 +48,8 @@ pub struct DxfSummary {
 pub struct Summary {
     pub file: FileSummary,
     pub dxf: DxfSummary,
+    /// Files to write next to the DXF, see [`crate::extra_files`]. Their bytes are not serialized.
+    pub extra_files: Vec<ExtraFile>,
 }
 
 /// Counts the bytes written through it.
@@ -74,6 +77,7 @@ pub fn convert(
 ) -> Result<Summary, Box<dyn std::error::Error>> {
     let mut file = FileSummary::default();
     let mut skipped = BTreeMap::new();
+    let mut extra_files = ExtraFiles::default();
     let mut counting = CountingWriter {
         inner: writer,
         count: 0,
@@ -84,6 +88,7 @@ pub fn convert(
             file.unreadable += 1;
             return;
         };
+        extra_files.inspect(object);
         match object {
             Object::Version { name } => file.version = Some(name.clone()),
             Object::Metadata {
@@ -142,6 +147,7 @@ pub fn convert(
             unknown_symbols: contents.unknown_symbols,
             dropped_pattern_symbols: contents.dropped_pattern_symbols,
         },
+        extra_files: extra_files.into_files(),
     })
 }
 

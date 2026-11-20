@@ -1,10 +1,12 @@
+use nczrs::extra_files::ExtraFiles;
 use nczrs::{parse_objects, write_dxf};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const USAGE: &str = "usage: nczrs [--json] [-o file.dxf] file.ncz
 
-Converts an NCZ file to DXF.
+Converts an NCZ file to DXF. Next to the DXF it also writes the coordinate system as <name>.prj, when the file
+names one, and the pictures and rich texts the file embeds as <name>-image-N.png and <name>-text-N.rtf.
 
   -o, --output file.dxf  where to write the DXF, by default <name>.dxf in the working directory
       --json             also write the parsed objects to <name>.json in the working directory, which takes
@@ -78,7 +80,11 @@ fn main() {
     let file = std::fs::File::create(&options.output)
         .unwrap_or_else(|error| exit(format!("{output}: {error}"), 1));
     let mut writer = std::io::BufWriter::new(file);
+    let mut extra_files = ExtraFiles::default();
     let result = write_dxf(&bytes, &mut writer, |item| {
+        if let Ok(object) = item {
+            extra_files.inspect(object);
+        }
         if let Err(failure) = item {
             eprintln!(
                 "warning: object {} at offset {:#x} (length {:?}) could not be decoded, skipped {} bytes",
@@ -99,6 +105,14 @@ fn main() {
             exit(format!("{input}: {error}"), 1);
         }
     };
+    let stem = options.output.with_extension("");
+    for extra in extra_files.into_files() {
+        let mut path = stem.clone().into_os_string();
+        path.push(&extra.suffix);
+        let path = PathBuf::from(path);
+        std::fs::write(&path, &extra.bytes)
+            .unwrap_or_else(|error| exit(format!("{}: {error}", path.display()), 1));
+    }
     if !contents.unknown_symbols.is_empty() {
         eprintln!(
             "warning: symbols of unknown shape, drawn as rectangles: {}",
