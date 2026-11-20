@@ -853,11 +853,19 @@ fn x_data(geometry: &Geometry) -> Option<dxf::XData> {
 }
 
 
+/// Whether NetCAD draws a symbol. Symbols with no scale are not drawn, NetCAD stores empty bounds for them. Nor are
+/// symbols whose stored bounds are empty (inverted) or a single point: they have no shape. In the corpus these are
+/// all symbol 0 of `F2.NCS` or `PLAN.NCS`, which NetCAD draws as nothing.
+fn symbol_is_drawn(scale: f32, header: &crate::geometry::Header) -> bool {
+    let (lower, upper) = (header.lower_bound, header.upper_bound);
+    let has_extent = lower.x <= upper.x && lower.y <= upper.y && (lower.x < upper.x || lower.y < upper.y);
+    scale > 0.0 && has_extent
+}
+
 /// Whether the geometry has a DXF counterpart, the others are left out of the drawing.
 pub fn is_exported(geometry: &Geometry) -> bool {
     match geometry {
-        // Symbols with no scale are not drawn, NetCAD stores empty bounds for them.
-        Geometry::Symbol { scale, .. } => *scale > 0.0,
+        Geometry::Symbol { scale, header, .. } => symbol_is_drawn(*scale, header),
         // Pictures and other type-15 objects are drawn as their frame, when they have one.
         Geometry::Image { header, .. } => header.lower_bound.x <= header.upper_bound.x,
         Geometry::Empty { .. } | Geometry::Other { .. } => false,
@@ -1015,8 +1023,8 @@ fn entity_types(
             rotation,
             symbol,
             library,
-            ..
-        } if scale > 0.0 => {
+            ref header,
+        } if symbol_is_drawn(scale, header) => {
             let insert = dxf::entities::Insert {
                 name: symbol_block_name(names.library(library), symbol),
                 location: position.into(),
@@ -1376,13 +1384,82 @@ impl Bounds {
         }
     }
 
-    /// Adds the points that define an entity. Texts and inserts count with their insertion point only, so the box can
-    /// miss the far side of a text or of a block's shape.
+    /// Adds the box of an arc: its ends, and the extreme points of its circle that its sweep passes. Angles are in
+    /// degrees, counter-clockwise from the start to the end, as in DXF.
+    fn add_arc(&mut self, center: &dxf::Point, radius: f64, start: f64, end: f64) {
+        let radius = radius.abs();
+        let at = |degrees: f64| {
+            let radians = degrees.to_radians();
+            dxf::Point::new(
+                center.x + radius * radians.cos(),
+                center.y + radius * radians.sin(),
+                center.z,
+            )
+        };
+        if !(start.is_finite() && end.is_finite()) {
+            return self.add_circle(center, radius);
+        }
+        let start = start.rem_euclid(360.0);
+        let mut sweep = (end - start).rem_euclid(360.0);
+        if sweep == 0.0 {
+            sweep = 360.0;
+        }
+        self.add(&at(start));
+        self.add(&at(start + sweep));
+        for quadrant in [0.0, 90.0, 180.0, 270.0, 360.0, 450.0, 540.0, 630.0] {
+            if quadrant > start && quadrant < start + sweep {
+                self.add(&at(quadrant));
+            }
+        }
+    }
+
+    /// Adds the box of a text: NetCAD's width (see [`text_width`]) and the height, placed by the alignment point and
+    /// justification as CAD programs place it, turned with the text.
+    fn add_text(&mut self, text: &dxf::entities::Text) {
+        use dxf::enums::HorizontalTextJustification as H;
+        use dxf::enums::VerticalTextJustification as V;
+
+        let height = text.text_height.abs();
+        let value = text.value.strip_prefix("%%u").unwrap_or(&text.value);
+        let width = text_width(Some(&text.text_style_name), value, 0.0) * height;
+        let justified = (text.horizontal_text_justification, text.vertical_text_justification)
+            != (H::Left, V::Baseline);
+        // The corner the text starts at (left end of the baseline), in the text's frame relative to `origin`.
+        let origin = if justified {
+            &text.second_alignment_point
+        } else {
+            &text.location
+        };
+        let along = match text.horizontal_text_justification {
+            H::Center | H::Middle => -width / 2.0,
+            H::Right => -width,
+            _ => 0.0,
+        };
+        let across = match text.vertical_text_justification {
+            V::Middle => -height / 2.0,
+            V::Top => -height,
+            _ => 0.0,
+        };
+        let (sin, cos) = text.rotation.to_radians().sin_cos();
+        for (dx, dy) in [(0.0, 0.0), (width, 0.0), (0.0, height), (width, height)] {
+            let (x, y) = (along + dx, across + dy);
+            self.add(&dxf::Point::new(
+                origin.x + x * cos - y * sin,
+                origin.y + x * sin + y * cos,
+                0.0,
+            ));
+        }
+    }
+
+    /// Adds the points that define an entity. Inserts count with their insertion point only, so the box can miss the
+    /// far side of a block's shape.
     fn add_entity(&mut self, entity: &dxf::entities::Entity) {
         use dxf::entities::EntityType;
 
         match &entity.specific {
-            EntityType::Arc(arc) => self.add_circle(&arc.center, arc.radius),
+            EntityType::Arc(arc) => {
+                self.add_arc(&arc.center, arc.radius, arc.start_angle, arc.end_angle)
+            }
             EntityType::Circle(circle) => self.add_circle(&circle.center, circle.radius),
             EntityType::Face3D(face) => {
                 for point in [
@@ -1410,7 +1487,7 @@ impl Bounds {
                     self.add(&dxf::Point::new(vertex.x, vertex.y, 0.0));
                 }
             }
-            EntityType::Text(text) => self.add(&text.location),
+            EntityType::Text(text) => self.add_text(text),
             _ => {}
         }
     }
@@ -1592,6 +1669,10 @@ pub fn write_dxf(
     let mut block_colors: BTreeMap<String, Vec<(std::ops::Range<usize>, u8)>> = BTreeMap::new();
     let mut reserved_handles = 0;
     let mut extents = Extents::default();
+    // The union of the bounds stored in the headers of the model space geometries, which NetCAD 5 writes as the
+    // limits (all 242 corpus files checked): it holds geometry that is not drawn, such as symbols with scale 0, and
+    // some files store an arc's whole circle.
+    let mut stored_bounds = Bounds::default();
     for item in ObjectReader::new(bytes)? {
         inspect(&item);
         let Ok(object) = item else { continue };
@@ -1623,6 +1704,17 @@ pub fn write_dxf(
                 }
             }
             Object::Geometry { geometry } => {
+                if block.is_none() && !matches!(geometry, Geometry::Empty { .. } | Geometry::Other { .. }) {
+                    let header = geometry.header();
+                    let (lower, upper): (dxf::Point, dxf::Point) =
+                        (header.lower_bound.into(), header.upper_bound.into());
+                    // Empty bounds are stored inverted, and unset ones as ±1e30.
+                    let sane = |point: &dxf::Point| point.x.abs() < 1e20 && point.y.abs() < 1e20;
+                    if lower.x <= upper.x && lower.y <= upper.y && sane(&lower) && sane(&upper) {
+                        stored_bounds.add(&lower);
+                        stored_bounds.add(&upper);
+                    }
+                }
                 if let Geometry::Symbol {
                     position,
                     scale,
@@ -1723,10 +1815,14 @@ pub fn write_dxf(
     }
 
     let (bounds, _) = extents.bounds();
-    if let Bounds(Some((min, max))) = bounds {
-        // NetCAD writes the bounds of its entities as the limits too, which are 2D.
+    // Without stored bounds (no geometry stores any), the limits are the extents.
+    let limits = if stored_bounds.0.is_some() { &stored_bounds } else { &bounds };
+    if let Bounds(Some((min, max))) = limits {
+        // The limits as NetCAD writes them (2D), see `stored_bounds`; the extents below are what is drawn.
         drawing.header.minimum_drawing_limits = min.clone();
         drawing.header.maximum_drawing_limits = max.clone();
+    }
+    if let Bounds(Some((min, max))) = bounds {
         // The view a reader opens with, for readers that do not zoom to the extents: the bounds with a margin, tall
         // enough for a window of 3:2.
         let (width, height) = (max.x - min.x, max.y - min.y);
@@ -1899,6 +1995,61 @@ mod tests {
         );
         assert_eq!(PointMarker::of("118/535", false), None);
         assert_eq!(PointMarker::of("", false), None);
+    }
+
+    #[test]
+    fn bounds_cover_the_text_box() {
+        use dxf::entities::{Entity, EntityType, Text};
+        use dxf::enums::{HorizontalTextJustification as H, VerticalTextJustification as V};
+        use dxf::Point;
+
+        // `11` in ARIAL is 38/24 heights wide; centred-middle at (100, 50), height 2.4, unturned.
+        let text = Text {
+            value: "11".to_owned(),
+            text_height: 2.4,
+            text_style_name: "ARIAL".to_owned(),
+            location: Point::new(98.0, 49.0, 0.0),
+            second_alignment_point: Point::new(100.0, 50.0, 0.0),
+            horizontal_text_justification: H::Center,
+            vertical_text_justification: V::Middle,
+            ..Default::default()
+        };
+        let mut bounds = Bounds::default();
+        bounds.add_entity(&Entity::new(EntityType::Text(text)));
+        let (min, max) = bounds.0.unwrap();
+        let half = 38.0 / 24.0 * 2.4 / 2.0;
+        assert!((min.x - (100.0 - half)).abs() < 1e-9 && (max.x - (100.0 + half)).abs() < 1e-9);
+        assert!((min.y - 48.8).abs() < 1e-9 && (max.y - 51.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bounds_cover_only_the_arc() {
+        use dxf::entities::{Arc, Entity, EntityType};
+        use dxf::Point;
+
+        // A quarter arc from 0° to 90° around the origin, radius 10: only the first quadrant.
+        let mut bounds = Bounds::default();
+        bounds.add_entity(&Entity::new(EntityType::Arc(Arc::new(
+            Point::new(0.0, 0.0, 0.0),
+            10.0,
+            0.0,
+            90.0,
+        ))));
+        let (min, max) = bounds.0.unwrap();
+        assert!(min.x.abs() < 1e-9 && min.y.abs() < 1e-9);
+        assert!((max.x - 10.0).abs() < 1e-9 && (max.y - 10.0).abs() < 1e-9);
+        // From 350° to 10° it passes 0°, but not 90°, 180° or 270°.
+        let mut bounds = Bounds::default();
+        bounds.add_entity(&Entity::new(EntityType::Arc(Arc::new(
+            Point::new(0.0, 0.0, 0.0),
+            10.0,
+            350.0,
+            10.0,
+        ))));
+        let (min, max) = bounds.0.unwrap();
+        assert!((max.x - 10.0).abs() < 1e-9);
+        assert!((min.x - 10.0 * 10_f64.to_radians().cos()).abs() < 1e-9);
+        assert!((max.y - 10.0 * 10_f64.to_radians().sin()).abs() < 1e-9);
     }
 
     #[test]
