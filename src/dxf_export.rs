@@ -1565,6 +1565,9 @@ const STRAY_SHARE: f64 = 0.01;
 struct Extents {
     /// Entity count and box by grid cell.
     cells: BTreeMap<(i64, i64), (usize, Bounds)>,
+    /// The inserts, by grid cell, which count with their insertion point until [`Extents::add_blocks`] adds the box
+    /// of their block.
+    inserts: Vec<((i64, i64), dxf::entities::Insert)>,
 }
 
 impl Extents {
@@ -1575,12 +1578,47 @@ impl Extents {
             return;
         };
         let cell = |a: f64, b: f64| ((a + b) / 2.0 / EXTENTS_CELL).floor() as i64;
-        let (count, cell_bounds) = self
-            .cells
-            .entry((cell(min.x, max.x), cell(min.y, max.y)))
-            .or_default();
+        let key = (cell(min.x, max.x), cell(min.y, max.y));
+        let (count, cell_bounds) = self.cells.entry(key).or_default();
         *count += 1;
         cell_bounds.union(&bounds);
+        if let dxf::entities::EntityType::Insert(insert) = &entity.specific {
+            self.inserts.push((key, insert.clone()));
+        }
+    }
+
+    /// Adds the box of each insert's block, scaled, turned and moved like the insert, to the insert's cell. Inserts
+    /// inside blocks count with their insertion point only.
+    fn add_blocks(&mut self, drawing: &dxf::Drawing) {
+        let mut block_bounds: BTreeMap<&str, (f64, f64, f64, f64)> = BTreeMap::new();
+        for block in drawing.blocks() {
+            let mut bounds = Bounds::default();
+            for entity in &block.entities {
+                bounds.add_entity(entity);
+            }
+            if let Some((min, max)) = bounds.0 {
+                let base = &block.base_point;
+                block_bounds.insert(&block.name, (min.x - base.x, min.y - base.y, max.x - base.x, max.y - base.y));
+            }
+        }
+        for (key, insert) in std::mem::take(&mut self.inserts) {
+            let Some(&(x0, y0, x1, y1)) = block_bounds.get(insert.name.as_str()) else {
+                continue;
+            };
+            let (sin, cos) = insert.rotation.to_radians().sin_cos();
+            let (sx, sy) = (insert.x_scale_factor, insert.y_scale_factor);
+            let Some((_, cell_bounds)) = self.cells.get_mut(&key) else {
+                continue;
+            };
+            for (x, y) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+                let (x, y) = (x * sx, y * sy);
+                cell_bounds.add(&dxf::Point::new(
+                    insert.location.x + x * cos - y * sin,
+                    insert.location.y + x * sin + y * cos,
+                    0.0,
+                ));
+            }
+        }
     }
 
     /// The box, and how many entities were left out of it.
@@ -1856,6 +1894,23 @@ pub fn write_dxf(
         }
     }
 
+    for marker in point_markers {
+        let block = symbol_shape_block(marker.block_name().to_owned(), marker.shapes());
+        block.entities.iter().for_each(&mut count);
+        drawing.add_block(block);
+    }
+    for (name, (library, symbol, footprint)) in symbols_in_use {
+        let shapes = library.and_then(|library| symbols::find(&library, symbol));
+        let block = match shapes {
+            Some(shapes) => symbol_shape_block(name, shapes),
+            None => symbol_footprint_block(&mut drawing, name, footprint),
+        };
+        block.entities.iter().for_each(&mut count);
+        drawing.add_block(block);
+    }
+
+    // Inserts count with the box of their block, which is only known now that every block exists.
+    extents.add_blocks(&drawing);
     let (bounds, _) = extents.bounds();
     // Without stored bounds (no geometry stores any), the limits are the extents.
     let limits = if stored_bounds.0.is_some() { &stored_bounds } else { &bounds };
@@ -1879,20 +1934,6 @@ pub fn write_dxf(
         drawing.header.maximum_drawing_extents = max;
     }
 
-    for marker in point_markers {
-        let block = symbol_shape_block(marker.block_name().to_owned(), marker.shapes());
-        block.entities.iter().for_each(&mut count);
-        drawing.add_block(block);
-    }
-    for (name, (library, symbol, footprint)) in symbols_in_use {
-        let shapes = library.and_then(|library| symbols::find(&library, symbol));
-        let block = match shapes {
-            Some(shapes) => symbol_shape_block(name, shapes),
-            None => symbol_footprint_block(&mut drawing, name, footprint),
-        };
-        block.entities.iter().for_each(&mut count);
-        drawing.add_block(block);
-    }
     contents.layers = drawing.layers().count();
     contents.line_types = drawing.line_types().count();
     contents.blocks = drawing.blocks().count();
@@ -2037,6 +2078,40 @@ mod tests {
         );
         assert_eq!(PointMarker::of("118/535", false), None);
         assert_eq!(PointMarker::of("", false), None);
+    }
+
+    #[test]
+    fn extents_cover_the_blocks_of_inserts() {
+        use dxf::entities::{Entity, EntityType, Insert, Line};
+        use dxf::Point;
+
+        let mut drawing = dxf::Drawing::new();
+        drawing.add_block(dxf::Block {
+            name: "B".to_owned(),
+            entities: vec![Entity::new(EntityType::Line(Line::new(
+                Point::new(0.0, 0.0, 0.0),
+                Point::new(10.0, 5.0, 0.0),
+            )))],
+            ..Default::default()
+        });
+        // Turned a quarter, at twice the size: the block's (10, 5) lands at (100 - 10, 100 + 20).
+        let insert = Insert {
+            name: "B".to_owned(),
+            location: Point::new(100.0, 100.0, 0.0),
+            x_scale_factor: 2.0,
+            y_scale_factor: 2.0,
+            rotation: 90.0,
+            ..Default::default()
+        };
+        let mut extents = Extents::default();
+        extents.add_entity(&Entity::new(EntityType::Insert(insert)));
+        extents.add_blocks(&drawing);
+        let (Bounds(Some((min, max))), left_out) = extents.bounds() else {
+            panic!("no bounds");
+        };
+        assert_eq!(left_out, 0);
+        assert!((min.x - 90.0).abs() < 1e-9 && (max.x - 100.0).abs() < 1e-9, "{min:?} {max:?}");
+        assert!((min.y - 100.0).abs() < 1e-9 && (max.y - 120.0).abs() < 1e-9, "{min:?} {max:?}");
     }
 
     #[test]
