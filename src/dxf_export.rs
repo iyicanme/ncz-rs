@@ -732,27 +732,89 @@ fn line_pattern_entities(
             }
         }
         for (along, number, size, turned) in pattern.symbol_places(scale, length) {
-            if library.is_none_or(|library| symbols::find(library, number).is_none()) {
-                continue;
-            }
-            let insert = dxf::entities::Insert {
-                name: symbol_block_name(library, number),
-                location: dxf::Point::new(
-                    start.x + ux * along,
-                    start.y + uy * along,
-                    start.z + dz * along / length,
-                ),
-                x_scale_factor: scale * size,
-                y_scale_factor: scale * size,
-                rotation: if turned { angle + 180.0 } else { angle },
-                ..Default::default()
-            };
-            // Symbols are drawn solid.
-            entities.push((
-                dxf::entities::EntityType::Insert(insert),
-                Some("CONTINUOUS".to_owned()),
-            ));
+            let location = dxf::Point::new(
+                start.x + ux * along,
+                start.y + uy * along,
+                start.z + dz * along / length,
+            );
+            entities.extend(pattern_symbol(library, number, location, scale * size, angle, turned));
         }
+    }
+    entities
+}
+
+/// The insert of a line type pattern's symbol, drawn solid, or nothing when the symbol's shape is not known.
+fn pattern_symbol(
+    library: Option<&str>,
+    number: u16,
+    location: dxf::Point,
+    scale: f64,
+    angle: f64,
+    turned: bool,
+) -> Option<(dxf::entities::EntityType, Option<String>)> {
+    if library.is_none_or(|library| symbols::find(library, number).is_none()) {
+        return None;
+    }
+    let insert = dxf::entities::Insert {
+        name: symbol_block_name(library, number),
+        location,
+        x_scale_factor: scale,
+        y_scale_factor: scale,
+        rotation: if turned { angle + 180.0 } else { angle },
+        ..Default::default()
+    };
+    Some((dxf::entities::EntityType::Insert(insert), Some("CONTINUOUS".to_owned())))
+}
+
+/// The symbols that the line type with the index puts along a curve polyline, through `points` (the curve as the
+/// export draws it, see [`curve_points`]). NetCAD 5 draws a curve's pattern symbols although it leaves the curve
+/// itself out of its export, along a curve close to but not the same as this one (about 2 cm off at the median in
+/// karabükimar_2010), so the symbols are where NetCAD puts them to within metres, not exactly. The pattern runs on
+/// along the whole curve, as along a line; parallel line types are not drawn.
+fn curve_pattern_entities(
+    names: &Names,
+    line_type: usize,
+    points: &[Coordinate],
+    closed: bool,
+) -> Vec<(dxf::entities::EntityType, Option<String>)> {
+    let Some(pattern) = names.line_pattern(line_type) else {
+        return vec![];
+    };
+    let mut path: Vec<dxf::Point> = points.iter().map(|&point| point.into()).collect();
+    if closed && let Some(first) = path.first().cloned() {
+        path.push(first);
+    }
+    let lengths: Vec<f64> = path
+        .windows(2)
+        .map(|pair| (pair[1].x - pair[0].x).hypot(pair[1].y - pair[0].y))
+        .collect();
+    let total: f64 = lengths.iter().sum();
+    if !(total > 0.0) {
+        return vec![];
+    }
+    let scale = names.pattern_scale();
+    let library = names.library(0);
+
+    let mut entities = vec![];
+    // The places come in order along the curve, so the segment only moves forwards.
+    let (mut segment, mut before) = (0, 0.0);
+    for (along, number, size, turned) in pattern.symbol_places(scale, total) {
+        while segment + 1 < lengths.len() && before + lengths[segment] < along {
+            before += lengths[segment];
+            segment += 1;
+        }
+        let (a, b, length) = (&path[segment], &path[segment + 1], lengths[segment]);
+        if length <= 0.0 {
+            continue;
+        }
+        let t = ((along - before) / length).clamp(0.0, 1.0);
+        let location = dxf::Point::new(
+            a.x + (b.x - a.x) * t,
+            a.y + (b.y - a.y) * t,
+            a.z + (b.z - a.z) * t,
+        );
+        let angle = (b.y - a.y).atan2(b.x - a.x).to_degrees();
+        entities.extend(pattern_symbol(library, number, location, scale * size, angle, turned));
     }
     entities
 }
@@ -1371,9 +1433,14 @@ fn geometry_entities(
     };
     let x_data = x_data(&geometry);
     let color = geometry.header().color;
-    let mut extras = match geometry {
+    let mut extras = match &geometry {
         Geometry::Line { begin, end, .. } => {
-            line_pattern_entities(names, usize::from(geometry.header().line_type), begin, end)
+            line_pattern_entities(names, usize::from(geometry.header().line_type), *begin, *end)
+        }
+        Geometry::PolyLine { points, flags, .. } if flags & (POLYLINE_CURVE | POLYLINE_SMOOTH_CURVE) != 0 => {
+            let closed = flags & POLYLINE_CLOSED != 0;
+            let curve = curve_points(points.clone(), closed);
+            curve_pattern_entities(names, usize::from(geometry.header().line_type), &curve, closed)
         }
         _ => vec![],
     };
@@ -1866,9 +1933,22 @@ pub fn write_dxf(
 
                 point_markers.extend(point_marker(&names, &geometry));
 
-                if let Geometry::Line { header, .. } = &geometry {
+                // The symbols that lines, and curve polylines, put along them (see `curve_pattern_entities`).
+                let pattern_line_type = match &geometry {
+                    Geometry::Line { header, .. } => Some((header.line_type, true)),
+                    Geometry::PolyLine { header, flags, .. }
+                        if flags & (POLYLINE_CURVE | POLYLINE_SMOOTH_CURVE) != 0 =>
+                    {
+                        Some((header.line_type, false))
+                    }
+                    _ => None,
+                };
+                if let Some((line_type, with_chain)) = pattern_line_type {
                     let library = names.library(0);
-                    let chain = line_type_chain(&names, usize::from(header.line_type));
+                    let mut chain = line_type_chain(&names, usize::from(line_type));
+                    if !with_chain {
+                        chain.truncate(1);
+                    }
                     let symbols: BTreeSet<u16> = chain
                         .iter()
                         .filter_map(|&(_, index)| names.line_pattern(index))
@@ -2015,6 +2095,29 @@ mod tests {
             segments: segments.to_vec(),
             unknown2: vec![],
         }
+    }
+
+    #[test]
+    fn puts_pattern_symbols_along_curves() {
+        let mut names = Names::default();
+        names.set_libraries(&["F2.NCS".to_owned()]);
+        names.line_types = vec![Some("TICK".to_owned())];
+        names.line_patterns = vec![LinePattern::new(&line_type(3, 0.0, 0, &[5.0, 1128.0, 5.0]))];
+        // A curve through 3 points in a row is a straight line east (NCZ coordinates have northing as x).
+        let points = [0.0, 10.0, 20.0].map(|east| Coordinate { x: 100.0, y: east, z: 0.0 });
+        let curve = curve_points(points.to_vec(), false);
+        let inserts: Vec<dxf::entities::Insert> = curve_pattern_entities(&names, 0, &curve, false)
+            .into_iter()
+            .filter_map(|(entity, _)| match entity {
+                dxf::entities::EntityType::Insert(insert) => Some(insert),
+                _ => None,
+            })
+            .collect();
+        let places: Vec<(f64, f64)> = inserts.iter().map(|i| (i.location.x, i.location.y)).collect();
+        assert_eq!(inserts.len(), 2, "{places:?}");
+        assert!((places[0].0 - 5.0).abs() < 1e-9 && (places[1].0 - 15.0).abs() < 1e-9);
+        assert!(places.iter().all(|&(_, y)| (y - 100.0).abs() < 1e-9));
+        assert!(inserts.iter().all(|i| i.name == "NCZ_SYMBOL_F2_128" && i.rotation.abs() < 1e-9));
     }
 
     #[test]
