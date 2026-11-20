@@ -8,7 +8,9 @@ pub mod extra_files;
 pub mod dxf_export;
 pub mod geometry;
 pub mod line_type;
+pub mod map_sheet;
 pub mod object;
+pub mod projection;
 pub mod string;
 #[cfg(feature = "dxf")]
 pub mod summary;

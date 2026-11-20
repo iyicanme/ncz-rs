@@ -3,6 +3,8 @@ use crate::geometry::{Geometry, Header, POLYLINE_CLOSED, POLYLINE_CURVE, POLYLIN
 use crate::line_type::LineType;
 use crate::colors::{DEFAULT_PALETTE, dxf_color};
 use crate::object::{LAYER_POINT_MARKERS, LAYER_VISIBLE, MetadataContent, Object, POINT_MARKERS_SWITCH};
+use crate::map_sheet;
+use crate::projection::TransverseMercator;
 use crate::symbols::{self, Shape};
 use crate::{ObjectReader, ParseFailure};
 use dxf::stream_writer::handles_needed;
@@ -14,6 +16,10 @@ const SYMBOL_SEGMENT: f32 = 1000.0;
 
 /// Application name of the extended data that holds point names and feature codes.
 const APP_ID: &str = "NCZ";
+
+/// How far a map sheet's projected corners may be from its stored bounds, in drawing units, for the projection to be
+/// taken. NetCAD's own corners match its bounds to the millimetre.
+const MAP_SHEET_TOLERANCE: f64 = 0.01;
 
 /// Prefix of the blocks that draw symbols. The shapes are not part of the NCZ file. Symbols whose shape is embedded
 /// (see `symbols/README.md`) are drawn with it, the others with their footprint, and those blocks can be redefined
@@ -1001,8 +1007,22 @@ fn entity_types(
             rotation,
             ..
         } => return vec![rotated_rectangle(drawing, corner1, corner2, rotation.into())],
-        Geometry::MapSheet { header, .. } => {
-            return vec![rectangle(drawing, header.lower_bound, header.upper_bound)];
+        // NetCAD draws a sheet through its true corners, which the name gives (see `map_sheet`). The stored bounds are
+        // the box of those corners, and only a projection that reproduces them is taken; otherwise the box is drawn.
+        Geometry::MapSheet { header, name } => {
+            let (lower, upper): (dxf::Point, dxf::Point) =
+                (header.lower_bound.into(), header.upper_bound.into());
+            let bounds = [lower.x, lower.y, upper.x, upper.y];
+            let corners = map_sheet::projected_corners(&name, names.projection, bounds, MAP_SHEET_TOLERANCE);
+            return vec![match corners {
+                Some(corners) => {
+                    let z = header.lower_bound.z;
+                    // NCZ coordinates have northing as x.
+                    let points = corners.iter().map(|&(east, north)| Coordinate { x: north, y: east, z }).collect();
+                    polyline(drawing, points, true)
+                }
+                None => rectangle(drawing, header.lower_bound, header.upper_bound),
+            }];
         }
         // The frame of a picture, rich text or other type-15 object, whose content is not exported. Its stored bounds
         // are the frame: all 8 in the corpus are unrotated.
@@ -1079,6 +1099,8 @@ struct Names {
     line_patterns: Vec<Option<LinePattern>>,
     /// The map scale, which scales line type patterns.
     scale: Option<f64>,
+    /// The projection `MPROJ` names, which places map sheet corners, see [`map_sheet::projected_corners`].
+    projection: Option<TransverseMercator>,
     /// Whether NetCAD draws a marker at the points of the layer, by layer index, see [`LAYER_POINT_MARKERS`] and
     /// [`POINT_MARKERS_SWITCH`].
     point_markers: Vec<bool>,
@@ -1205,6 +1227,16 @@ impl Names {
             }
             Object::Libraries { names } => self.set_libraries(names),
             Object::Scale { scale } => self.scale = Some(*scale),
+            Object::Metadata {
+                content:
+                    MetadataContent::Projection {
+                        projection,
+                        datum,
+                        central_meridian,
+                        ..
+                    },
+                ..
+            } => self.projection = TransverseMercator::from_mproj(*projection, *datum, *central_meridian),
             // One entry per layer, in the order of the layer table: the layer's colour, which is also the file's
             // palette entry for the layer's colour number.
             Object::Metadata {
@@ -1261,6 +1293,16 @@ impl Names {
             }
             Object::Libraries { names } => self.set_libraries(names),
             Object::Scale { scale } => self.scale = Some(*scale),
+            Object::Metadata {
+                content:
+                    MetadataContent::Projection {
+                        projection,
+                        datum,
+                        central_meridian,
+                        ..
+                    },
+                ..
+            } => self.projection = TransverseMercator::from_mproj(*projection, *datum, *central_meridian),
             _ => {}
         }
     }
