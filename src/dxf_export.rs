@@ -453,7 +453,7 @@ fn text_width(style: Option<&str>, text: &str, spacing: f32) -> f64 {
 /// code: group 11 is `a·width + b·height` along the baseline and `c·height` across it (to the left), group 10 is
 /// `d·height` along and `e·height` across. The stored point is the lower-left corner of the text for most codes; `P`,
 /// `Q` and `U` put the text half a height beside or above it. Matches 99.96% of 238,000 corpus texts to 0.02 of the
-/// height (`target/recheck/scripts/placemodel.py`).
+/// height.
 fn text_offsets(snap: char) -> [f64; 5] {
     match snap {
         '7' => [0.5, 0.0, -0.5, 0.0, 0.0],

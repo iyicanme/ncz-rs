@@ -5,7 +5,7 @@
 //! For each file it records whether the file was rejected, how many objects could not be decoded, the geometries by
 //! kind, the DXF entities by type and the geometries left out. The DXF output is checked for handles that are zero,
 //! repeated or not below `$HANDSEED`, for extended data that follows a `SEQEND`, and for loading back with the dxf
-//! crate. The results are compared with the baseline, `target/corpus-baseline.json` by default, which `--update`
+//! crate. The results are compared with the baseline, `ignored/corpus-baseline.json` by default, which `--update`
 //! replaces. The baseline is kept out of the repository, since it names the files of the corpus.
 //!
 //! Files over 60 MB are left out unless `--all` is given. The exit code is 1 when a check fails or a result differs
@@ -45,7 +45,7 @@ struct Record {
 fn parse_options() -> Result<Options, String> {
     let mut options = Options {
         dir: PathBuf::from("ncz"),
-        baseline: PathBuf::from("target/corpus-baseline.json"),
+        baseline: PathBuf::from("ignored/corpus-baseline.json"),
         all: false,
         update: false,
         jobs: 4,

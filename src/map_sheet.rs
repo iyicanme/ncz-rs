@@ -5,7 +5,7 @@
 //! divides the sheet before it: `A`–`D` into quarters clockwise from the north-west (1:50,000), `01`–`25` into a 5×5
 //! grid row by row from the north-west (1:10,000), `A`–`D` into quarters (1:5,000), `1`–`4` into quarters in the same
 //! order (1:2,000), and `A`–`D` again (1:1,000). These rules match all 2,732 named sheets of the corpus files with a
-//! NetCAD 5 export to 0.0001″ (`target/recheck/scripts/sheetdb.py`).
+//! NetCAD 5 export to 0.0001″.
 
 use crate::projection::{GRS80, INTERNATIONAL_1924, TransverseMercator, WGS84};
 
