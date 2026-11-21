@@ -3,9 +3,9 @@ use crate::string::{get_string, get_string_with_padding, get_varint_string};
 use bopper::ReadBuffer;
 
 pub const POLYLINE_CLOSED: u32 = 0x01;
-/// Drawn as a curve through the points, as `Curve` in `ncz.pat`.
+/// Drawn as a curve through the points, `curve` in `ncz.pat`.
 pub const POLYLINE_CURVE: u32 = 0x04;
-/// Drawn as a smooth curve, as `SmoothCurve` in `ncz.pat`.
+/// Drawn as a smooth curve, `smooth_curve` in `ncz.pat`.
 pub const POLYLINE_SMOOTH_CURVE: u32 = 0x40;
 
 /// Fields shared by every geometry record, read before the type specific part.

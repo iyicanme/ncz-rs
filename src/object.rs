@@ -19,6 +19,7 @@ pub const POINT_MARKERS_SWITCH: usize = 5;
 const RASTER_REFERENCE_LENGTH: usize = 181;
 const LAYER_STYLES_HEADER_LENGTH: usize = 63;
 const LAYER_STYLE_LENGTH: usize = 256;
+const LAYER_STYLES_TRAILER_LENGTH: usize = 201;
 
 #[derive(Debug, serde::Serialize)]
 pub struct Layer {
@@ -441,8 +442,11 @@ fn read_projection(buffer: &mut impl ReadBuffer) -> Option<MetadataContent> {
 
 fn read_layer_styles(buffer: &mut impl ReadBuffer) -> Option<MetadataContent> {
     let unknown1 = buffer.get_slice(LAYER_STYLES_HEADER_LENGTH)?;
-    // Only the low byte of the layer count is known to be the count.
-    let count = unknown1[4];
+    // The header holds a u32 version (100) and the u32 layer count. The entries fill the content up to a trailer of
+    // fixed length; a few files hold one entry less than the count.
+    let count = u32::from_le_bytes(unknown1[4..8].try_into().ok()?);
+    let stored = buffer.remaining().saturating_sub(LAYER_STYLES_TRAILER_LENGTH) / LAYER_STYLE_LENGTH;
+    let count = usize::try_from(count).ok()?.min(stored);
 
     let layers = (0..count)
         .map(|_| {
@@ -485,4 +489,45 @@ fn decode_metadata(bytes: &[u8]) -> Option<String> {
     }
 
     String::from_utf8(bytes.to_vec()).ok().and_then(as_text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layer_styles(count: u32, entries: usize) -> Vec<u8> {
+        let mut content = vec![0; LAYER_STYLES_HEADER_LENGTH];
+        content[..4].copy_from_slice(&100u32.to_le_bytes());
+        content[4..8].copy_from_slice(&count.to_le_bytes());
+        for i in 0..entries {
+            let mut entry = vec![0; LAYER_STYLE_LENGTH];
+            entry[..3].copy_from_slice(&[i as u8, 1, 2]);
+            content.extend(entry);
+        }
+        content.extend([0; LAYER_STYLES_TRAILER_LENGTH]);
+        content
+    }
+
+    fn read_layers(content: &[u8]) -> Vec<LayerStyle> {
+        match read_layer_styles(&mut BigEndianReadBuffer::new(content)) {
+            Some(MetadataContent::LayerStyles { layers, unknown2, .. }) => {
+                assert_eq!(unknown2.len(), LAYER_STYLES_TRAILER_LENGTH);
+                layers
+            }
+            _ => panic!("not read as layer styles"),
+        }
+    }
+
+    #[test]
+    fn reads_layer_styles_of_256_layers() {
+        let layers = read_layers(&layer_styles(256, 256));
+
+        assert_eq!(layers.len(), 256);
+        assert_eq!(layers[255].rgb, [255, 1, 2]);
+    }
+
+    #[test]
+    fn reads_layer_styles_with_an_entry_missing() {
+        assert_eq!(read_layers(&layer_styles(5, 4)).len(), 4);
+    }
 }
